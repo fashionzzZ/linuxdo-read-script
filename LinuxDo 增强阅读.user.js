@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.7
+// @version      1.0.8
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -36,7 +36,7 @@
     .ldp-overlay{position:fixed;inset:0;z-index:2147483000;display:flex;
       align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
     .ldp-modal{display:flex;flex-direction:column;
-      width:min(880px,92vw);height:86vh;
+      width: 90%;max-width: 1000px;height:90vh;
       border-radius:12px;overflow:hidden;font-size:16px;
       line-height:1.65;background:var(--secondary,#fff);color:var(--primary,#222);
       box-shadow:0 16px 50px rgba(0,0,0,.4);}
@@ -497,9 +497,9 @@
       <div class="ldp-post-head">
         ${avatar ? `<img class="ldp-avatar" src="${avatar}" alt="" loading="lazy" decoding="async">` : ''}
         <span class="ldp-author">${esc(p.name || p.username)}</span>
+        <span class="ldp-user">@${esc(p.username)}</span>
         ${isOP ? '<span class="ldp-op">OP</span>' : ''}
         ${isME ? '<span class="ldp-me">ME</span>' : ''}
-        <span class="ldp-user">@${esc(p.username)}</span>
         ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
         <span class="ldp-floor">#${p.post_number}</span>
       </div>
