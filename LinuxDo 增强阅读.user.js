@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.0.6
+// @version      1.0.7
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -37,7 +37,7 @@
       align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
     .ldp-modal{display:flex;flex-direction:column;
       width:min(880px,92vw);height:86vh;
-      border-radius:12px;overflow:hidden;font-size:14px;
+      border-radius:12px;overflow:hidden;font-size:16px;
       line-height:1.65;background:var(--secondary,#fff);color:var(--primary,#222);
       box-shadow:0 16px 50px rgba(0,0,0,.4);}
     .ldp-header{display:flex;align-items:flex-start;gap:10px;padding:16px 20px;
@@ -45,18 +45,30 @@
     .ldp-title{margin:0;font-size:18px;font-weight:700;}
     .ldp-meta{font-size:12px;opacity:.7;margin-top:4px;}
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
-    .ldp-open{cursor:pointer;border:1px solid var(--primary-low,#ccc);
-      background:transparent;color:inherit;border-radius:6px;padding:4px 10px;
-      font-size:12px;white-space:nowrap;text-decoration:none;}
-    .ldp-open:hover{background:var(--primary-very-low,#f0f0f0);}
-    .ldp-bookmark{cursor:pointer;border:1px solid var(--primary-low,#ccc);
-      background:transparent;color:inherit;border-radius:6px;padding:4px 10px;
-      font-size:12px;white-space:nowrap;}
-    .ldp-bookmark.on{background:var(--tertiary,#08c);color:#fff;border-color:transparent;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
       line-height:1;color:inherit;padding:0 4px;}
     .ldp-body{flex:1;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;}
+
+    /* 底部悬浮操作栏 */
+    .ldp-footer{flex:none;display:flex;align-items:center;justify-content:space-around;
+      padding:12px 24px;border-top:1px solid var(--primary-low,#eee);
+      background:var(--secondary,#fff);}
+    .ldp-fbtn{background:transparent;border:none;cursor:pointer;display:flex;
+      align-items:center;gap:8px;font-size:.95rem;color:var(--primary-medium,#666);
+      padding:8px 16px;border-radius:6px;transition:all .2s ease;font-weight:600;
+      white-space:nowrap;text-decoration:none;}
+    .ldp-fbtn:hover{background:var(--primary-low,#f0f0f0);color:var(--tertiary,#3b82f6);}
+    .ldp-fbtn svg{width:18px;height:18px;fill:currentColor;flex:none;}
+    .ldp-fbtn:disabled{cursor:default;opacity:.5;pointer-events:none;}
+    .ldp-fbtn.loading{opacity:.6;pointer-events:none;}
+    .ldp-fbtn.liked{color:#e74c3c;}
+    .ldp-fbtn.liked svg{fill:#e74c3c;}
+    .ldp-fbtn.bookmarked{color:var(--tertiary,#3b82f6);}
+    .ldp-fbtn.bookmarked svg{fill:var(--tertiary,#3b82f6);}
+
+    /* 楼主帖自身的点赞/回复按钮已挪到底部操作栏，这里隐藏原位置 */
+    .ldp-topic > .ldp-post > .ldp-actions{display:none;}
 
     /* 骨架屏 */
     .ldp-loadmask{position:absolute;inset:0;z-index:5;
@@ -92,7 +104,7 @@
     /* 评论区分隔 + 左上角“评论”标题 */
     .ldp-comments-header{display:flex;align-items:center;gap:8px;
       margin:6px 0 2px;padding-top:14px;border-top:2px solid var(--primary-low,#e0e0e0);
-      font-size:15px;font-weight:700;letter-spacing:.5px;}
+      font-size:16px;font-weight:700;letter-spacing:.5px;}
     .ldp-comments-header::before{content:"💬";font-size:14px;}
     .ldp-comments-count{font-size:12px;font-weight:500;opacity:.6;}
     .ldp-comments{padding-top:4px;}
@@ -387,6 +399,7 @@
           || (data.post_stream.posts.find((p) => p.post_number === 1) || {}).username
           || null;
       topic._opUsername = op;
+      topic._opPost = data.post_stream.posts.find((p) => p.post_number === 1) || null;
       return topic;
     }
 
@@ -654,6 +667,7 @@
             textarea = box.querySelector('textarea'),
             raw = textarea.value.trim();
         if (!raw) return;
+        if (raw.length < 16) { alert('帖子必须至少为16个字符'); return; }
 
         sendBtn.disabled = true;
         sendBtn.textContent = '发送中…';
@@ -670,6 +684,7 @@
           const postData = data && data.post ? data.post : data;
 
           if (postData && postData.cooked) {
+            const isTopLevel = postNumber === 1; // 回复楼主帖时按普通顶级评论处理，而非楼中楼
             const newNode = renderPost({
               id: postData.id,
               post_number: postData.post_number,
@@ -680,15 +695,22 @@
               created_at: postData.created_at || new Date().toISOString(),
               reply_to_post_number: postNumber,
               actions_summary: [],
-            }, true, ctx);
+            }, !isTopLevel, ctx);
 
             newNode.classList.add('ldp-flash');
 
-            const childrenContainer = postNode.querySelector(':scope > .ldp-children');
-            childrenContainer.prepend(newNode);
+            if (isTopLevel) {
+              ctx.commentsEl.prepend(newNode);
+              newNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            } else {
+              const childrenContainer = postNode.querySelector(':scope > .ldp-children');
+              childrenContainer.prepend(newNode);
+            }
 
             ctx.nodeMap.set(postData.post_number, newNode);
             ctx.tracker.observe(newNode);
+            ctx.totalComments = (ctx.totalComments || 0) + 1;
+            updateCommentsHeader(ctx);
 
             const tip = box.querySelector('.ldp-reply-tip');
             if (tip) {
@@ -755,7 +777,8 @@
   /* ============ 12. 收藏 ============ */
   function bindBookmark(btn, topic) {
     let bookmarked = !!topic.bookmarked, bookmarkId = topic.bookmark_id || null;
-    const sync = () => { btn.classList.toggle('on', bookmarked); btn.textContent = bookmarked ? '★ 已收藏' : '☆ 收藏本帖'; };
+    const textEl = btn.querySelector('.ldp-f-bookmark-text') || btn;
+    const sync = () => { btn.classList.toggle('bookmarked', bookmarked); textEl.textContent = bookmarked ? '已收藏' : '收藏'; };
     sync();
     btn.addEventListener('click', async () => {
       btn.disabled = true;
@@ -771,9 +794,35 @@
     });
   }
 
+  /* 底部悬浮操作栏的点赞按钮：对楼主帖（1 楼）执行点赞/取消点赞 */
+  function bindFooterLike(btn, countEl, opPost) {
+    if (!opPost) { btn.disabled = true; return; }
+    const { count, acted, canAct } = likeInfo(opPost);
+    let liked = acted;
+    countEl.textContent = count;
+    btn.classList.toggle('liked', liked);
+    btn.disabled = !(canAct || acted);
+    btn.addEventListener('click', async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      try {
+        if (!liked) {
+          await apiSend(`${BASE}/post_actions`, 'POST', { id: opPost.id, post_action_type_id: 2, flag_topic: false });
+          liked = true; btn.classList.add('liked');
+          countEl.textContent = (+countEl.textContent) + 1;
+        } else {
+          await apiSend(`${BASE}/post_actions/${opPost.id}?post_action_type_id=2`, 'DELETE');
+          liked = false; btn.classList.remove('liked');
+          countEl.textContent = Math.max(0, (+countEl.textContent) - 1);
+        }
+      } catch (err) { alert('操作失败：' + err.message); } finally { btn.disabled = false; }
+    });
+  }
+
   function updateCommentsHeader(ctx) {
     if (ctx.countEl) ctx.countEl.textContent = ctx.totalComments ? `（${ctx.totalComments}）` : '';
     if (ctx.emptyEl) ctx.emptyEl.style.display = ctx.totalComments ? 'none' : '';
+    if (ctx.footerReplyCountEl) ctx.footerReplyCountEl.textContent = ctx.totalComments || 0;
   }
 
   /* 骨架屏 HTML */
@@ -813,8 +862,6 @@
             <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
           </div>
           <div class="ldp-head-btns">
-            <button class="ldp-bookmark" hidden>☆ 收藏本帖</button>
-            <a class="ldp-open" href="#" target="_blank" rel="noopener" hidden>↗ 打开原帖</a>
             <button class="ldp-close" title="关闭">×</button>
           </div>
         </div>
@@ -826,6 +873,24 @@
           <div class="ldp-sentinel"></div>
           <div class="ldp-loadmask">${SKELETON_HTML}</div>
         </div>
+        <div class="ldp-footer" hidden>
+          <button class="ldp-fbtn ldp-f-like" disabled title="点赞">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            <span class="ldp-f-like-count">0</span>
+          </button>
+          <button class="ldp-fbtn ldp-f-reply" title="回复帖子">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M21.99 4c0-1.1-.89-2-1.99-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14l4 4-.01-18z"/></svg>
+            <span class="ldp-f-reply-count">0</span>
+          </button>
+          <button class="ldp-fbtn ldp-f-bookmark" title="收藏">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/></svg>
+            <span class="ldp-f-bookmark-text">收藏</span>
+          </button>
+          <a class="ldp-fbtn ldp-f-open" href="#" target="_blank" rel="noopener" title="新标签页打开">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+            <span>打开原帖</span>
+          </a>
+        </div>
       </div>`;
     document.body.appendChild(overlay);
     CURRENT_OVERLAY = overlay;
@@ -835,12 +900,18 @@
     const countEl = overlay.querySelector('.ldp-comments-count'), emptyEl = overlay.querySelector('.ldp-comments-empty');
     const sentinel = overlay.querySelector('.ldp-sentinel'), maskEl = overlay.querySelector('.ldp-loadmask');
     const loadingTip = overlay.querySelector('.ldp-loading-tip');
+    const footerEl = overlay.querySelector('.ldp-footer');
+    const fLikeBtn = overlay.querySelector('.ldp-f-like'), fLikeCountEl = overlay.querySelector('.ldp-f-like-count');
+    const fReplyBtn = overlay.querySelector('.ldp-f-reply'), fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
+    const fReplyCountEl = overlay.querySelector('.ldp-f-reply-count');
+    const fOpenLink = overlay.querySelector('.ldp-f-open');
 
     const loader = createLoader(topicId), tracker = createReadTracker(topicId, body);
     const ctx = {
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl, scrollRoot: body,
       nodeMap: new Map(), pending: [], tracker, totalComments: 0, repliesIO: null,
       subReplyState: new Map(), // 楼中楼原始数据 + 已渲染数量的状态表
+      footerReplyCountEl: fReplyCountEl, // 底部悬浮操作栏的评论数展示
     };
     ctx.repliesIO = createRepliesIO(ctx);
 
@@ -892,10 +963,20 @@
       overlay.querySelector('.ldp-meta').textContent = `${topic.posts_count} 帖 · ${topic.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
       updateCommentsHeader(ctx);
 
-      const openBtn = overlay.querySelector('.ldp-open');
-      openBtn.href = `${BASE}/t/${topic.id}`; openBtn.hidden = false;
-      const bmBtn = overlay.querySelector('.ldp-bookmark');
-      bmBtn.hidden = false; bindBookmark(bmBtn, topic);
+      fOpenLink.href = `${BASE}/t/${topic.id}`;
+      bindBookmark(fBookmarkBtn, topic);
+      bindFooterLike(fLikeBtn, fLikeCountEl, topic._opPost);
+      fReplyBtn.addEventListener('click', () => {
+        const opNode = ctx.topicEl.querySelector('.ldp-post');
+        if (!opNode) return;
+        const box = ensureReplyBox(opNode);
+        box.classList.toggle('open');
+        if (box.classList.contains('open')) {
+          box.querySelector('textarea').focus();
+          box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      });
+      footerEl.hidden = false;
 
       bindActions(modal, ctx);
       tracker.start();
@@ -916,7 +997,7 @@
   /* ============ 14. 拦截标题点击 ============ */
   document.addEventListener('click', function (e) {
     const a = e.target.closest('a.title, a.raw-topic-link, a.search-link, a.search-result-topic, a[href*="/t/"]');
-    if (!a || a.classList.contains('ldp-link-open') || a.classList.contains('ldp-open')) return;
+    if (!a || a.classList.contains('ldp-link-open') || a.classList.contains('ldp-f-open')) return;
     const inMenu = !!a.closest(MENU_PANEL_SEL), inSearch = !!a.closest(SEARCH_SEL);
     const isTitle = a.classList.contains('title') || a.classList.contains('raw-topic-link') || a.classList.contains('search-link') || a.classList.contains('search-result-topic');
     if (!isTitle && !inMenu && !inSearch) return;
