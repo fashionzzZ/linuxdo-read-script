@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.1.0
+// @version      1.1.1
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -562,9 +562,21 @@
     const isME = ME_USERNAME && p.username === ME_USERNAME;
     const time = fmtTime(p.created_at);
 
-    // 强制 cooked 里的链接在新标签页打开
+    // 强制 cooked 里的链接在新标签页打开（图片/灯箱链接除外）
     let cooked = p.cooked || '';
-    cooked = cooked.replace(/<a\s+(?![^>]*target=)/gi, '<a target="_blank" ');
+    cooked = (() => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = cooked;
+      tmp.querySelectorAll('a[href]').forEach(a => {
+        const href = a.getAttribute('href') || '';
+        const isImageLink = /\.(png|jpe?g|gif|webp|bmp|avif)(\?|#|$)/i.test(href);
+        const isLightbox = a.classList.contains('lightbox');
+        if (!isImageLink && !isLightbox) {
+          if (!a.getAttribute('target')) a.setAttribute('target', '_blank');
+        }
+      });
+      return tmp.innerHTML;
+    })();
 
     // Boosts 数据
     const boostsHtml = renderBoosts(p.boosts || []);
