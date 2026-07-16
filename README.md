@@ -3,7 +3,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、原图灯箱一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.2.0-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -15,8 +15,8 @@
 
 - **标题弹窗预览**：点击列表标题（含右上角用户菜单/通知面板中的话题链接）即在当前页弹窗打开，不跳转。
 - **智能定位**：首次打开从头开始；已读过的帖子自动跳转到"已读跳未读"位置（`last_read_post_number + 1`）；从通知/用户菜单点击则直达对应楼层。
-- **双向分片加载**：基于 `post_stream.stream`，以目标楼层为中心按需向上/向下分片加载，长帖首屏更快；顶部/底部哨兵 + `IntersectionObserver` 自动续加载，向上翻页时不会引起页面跳动；到底后展示"已加载全部评论"提示。
-- **楼中楼评论**：依据 `reply_to_post_number` 还原嵌套回复结构，缩进展示父子关系；子回复较多时先展示少量，可点击展开剩余，按需分批拉取。
+- **双向分片加载**：以目标楼层为中心按需向上/向下分片加载，长帖首屏更快；顶部/底部哨兵 + `IntersectionObserver` 自动续加载，向上翻页时不会引起页面跳动；到底后展示"已加载全部评论"提示。
+- **楼中楼评论**：还原嵌套回复结构，缩进展示父子关系；子回复较多时先展示少量，可点击展开剩余，按需分批拉取。
 - **底部工具栏**：弹窗底部设有固定工具栏（点赞 / 回复 / Boost / 收藏 / 打开原帖），滚动到任意位置都能对楼主帖快速互动。
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
@@ -26,7 +26,6 @@
 - **OP / ME 标识**：楼主所有楼层标注蓝色 `OP`，本人楼层标注绿色 `ME`。
 - **打开原帖**：头部一键在新标签页打开帖子原始页面。
 - **已读上报**：仅对**滚动进入视口并停留足够时间**的楼层，按真实阅读节奏调用 `topics/timings` 上报，使弹窗阅读也能计入 Connect 进度。
-- **请求限流与自动重试**：所有只读接口请求统一走同一个串行队列并保持最小间隔，避免短时间并发请求过多；遇到 429 限流会按 `Retry-After`（或指数退避）自动等待重试，减少因滚动过快而报错的情况。
 
 ## 安装
 
@@ -49,34 +48,11 @@
 | ↗ 打开原帖 | 新标签页打开原始帖子页面 |
 | Esc / 点击遮罩 / × | 关闭弹窗 |
 
-## 配置项
-
-脚本顶部提供可调常量：
-
-```js
-const PAGE_SIZE = 20;          // 每次分块请求的楼层数（与 Discourse 默认一致）
-const SLICE_RADIUS = 20;       // 双向分片：以目标楼层为中心，前后各保留的"窗口半径"（楼层数）
-const READ_THRESHOLD = 1500;   // 单楼累计可见超过该毫秒数才算"读过"
-const FLUSH_INTERVAL = 5000;   // 已读增量上报间隔（毫秒）
-
-// 楼中楼分批展开
-const SUB_REPLY_INITIAL_SIZE = 3;   // 子回复默认先展示的条数
-const SUB_REPLY_PAGE_SIZE = 10;     // 点击"展开更多"后每次追加的条数
-
-// 请求限流与 429 自动重试
-const REQUEST_MIN_INTERVAL = 300;   // 相邻两次只读请求的最小间隔（毫秒）
-const RETRY_MAX_ATTEMPTS = 3;       // 命中 429 时的最多重试次数
-const RETRY_BASE_DELAY = 500;       // 429 指数退避基础延迟（毫秒），实际延迟 = 该值 × 2^重试次数
-```
-
-想更保守地上报已读，可调大 `READ_THRESHOLD`（如 `3000`）；如果依然偶尔遇到 429，可以调大 `REQUEST_MIN_INTERVAL` 或 `RETRY_MAX_ATTEMPTS`。
-
 ## 工作原理
 
 - **数据获取**：`GET /t/{id}.json` 取话题基础信息与完整 `post_stream.stream`；再以目标楼层（首次为第 1 楼，或"已读跳未读"/指定楼层）为中心，按 `SLICE_RADIUS` 圈定一个窗口，用 `GET /t/{id}/posts.json?post_ids[]=...` 批量取回窗口内楼层，避免长帖一次性拉取全部内容。
 - **双向续加载**：滚动到顶部/底部哨兵时分别向上/向下再取一批（`PAGE_SIZE` 条），到边界后标记完成并展示"已加载全部评论"提示；向上加载采用整体位移补偿，不会造成视觉跳动。
 - **楼中楼**：以楼层号建立映射，按 `reply_to_post_number` 挂到父节点；跨分块未就绪的父级先暂存，块加载完后回扫归位；子回复默认只展示 `SUB_REPLY_INITIAL_SIZE` 条，点击展开后再分批（`SUB_REPLY_PAGE_SIZE`）通过 `GET /posts/{id}/replies.json` 懒加载。
-- **请求队列与限流**：所有只读 GET 请求统一进入一个全局串行队列，任意时刻只有一个请求在途，且相邻请求间隔不小于 `REQUEST_MIN_INTERVAL`；命中 429 时按响应头 `Retry-After`（若有）或指数退避（`RETRY_BASE_DELAY` 为基数）等待后自动重试，重试耗尽才提示失败。
 - **已读上报**：用 `IntersectionObserver` 记录楼层进入/离开视口的时间戳累计停留时长，达阈值后通过 `POST /topics/timings`（带 `topic_time`、`timings[楼层]=毫秒`）增量上报；切后台自动暂停计时，避免虚增。
 - **交互接口**：点赞 `POST/DELETE /post_actions`、回复 `POST /posts`、收藏 `POST/DELETE /bookmarks`、Boost `POST /discourse-boosts/posts/{id}/boosts` 与 `DELETE /discourse-boosts/boosts/{id}`，均携带 `X-CSRF-Token`。
 
@@ -102,9 +78,6 @@ A：脚本优先取外层 `a.lightbox` 的 `href` 作为原图；若某图无该
 
 **Q：已读没生效？**
 A：确认已登录，且该楼确实滚动进入视口并停留超过 `READ_THRESHOLD`；后台标签页不计时。
-
-**Q：滚动很快时偶尔报错或加载失败？**
-A：脚本内置了请求队列和 429（限流）自动退避重试，正常网络环境下会自动恢复；如果依然频繁出现，可以适当调大配置项中的 `REQUEST_MIN_INTERVAL`。
 
 ## 许可证
 

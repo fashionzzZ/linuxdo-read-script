@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.2.0
+// @version      1.3.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -16,25 +16,15 @@
 
   const BASE = location.origin;
   const PAGE_SIZE = 20;          // 每次请求帖子数（与 Discourse 默认一致），也是 loadUp/loadDown 每次追加的数量
-  const SLICE_RADIUS = 20;       // 双向切片：目标楼层前后各保留的"窗口半径"，单位是"楼层数"
   const READ_THRESHOLD = 1500;
   const FLUSH_INTERVAL = 5000;
   let ME_USERNAME = null;
 
-  // --- 楼中楼分批加载 相关配置 ---
-  const SUB_REPLY_INITIAL_SIZE = 3;
-  const SUB_REPLY_PAGE_SIZE = 10;
-  const REPLIES_HOVER_DELAY = 400;
-
-  // --- 全局请求队列 & 429 退避重试 相关配置 ---
-  // 所有只读 GET 请求（fetchJSON）统一走这个队列：任意时刻只有 1 个请求在途，
-  // 且相邻两次请求之间至少间隔 REQUEST_MIN_INTERVAL 毫秒；命中 429 时按
-  // 响应头 Retry-After（若有）或指数退避等待后自动重试。
-  const REQUEST_MIN_INTERVAL = 300;   // 相邻请求最小间隔（毫秒）
-  const RETRY_MAX_ATTEMPTS = 3;       // 429 最多重试次数（不含首次请求）
-  const RETRY_BASE_DELAY = 500;       // 指数退避基础延迟（毫秒），实际延迟 = BASE * 2^attempt
-  let lastRequestTime = 0;
-  let requestQueueTail = Promise.resolve();
+  // --- 嵌套树 API 状态管理 ---
+  const idToPost = new Map();     // postId → post 数据（混合索引）
+  let nestedTreeRoots = [];       // 顶层回复数组
+  let nestedHasMoreRoots = false; // 是否有更多顶层回复
+  let nestedRootsPage = 0;        // 当前已加载的分页号
 
   const MENU_PANEL_SEL = '.menu-panel, .user-menu, .quick-access-panel, .notifications';
   const SEARCH_SEL = '.search-results, .fps-result, .search-menu, .search-menu-container, .search-result-topic';
@@ -271,51 +261,12 @@
   const csrfToken = () =>
       (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
 
-  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-  /**
-   * queueRequest：把一个异步任务串行接到全局请求队列尾部。
-   * 保证：
-   *   1. 任意时刻只有一个任务在执行（不会并发发请求）；
-   *   2. 每个任务开始前，距离上一个任务发起时间至少隔 REQUEST_MIN_INTERVAL 毫秒；
-   *   3. 某个任务失败不会卡住队列，后续任务照常按顺序执行。
-   */
-  function queueRequest(task) {
-    const run = requestQueueTail.then(async () => {
-      const wait = REQUEST_MIN_INTERVAL - (Date.now() - lastRequestTime);
-      if (wait > 0) await sleep(wait);
-      lastRequestTime = Date.now();
-      return task();
-    });
-    requestQueueTail = run.catch(() => {}); // 吞掉错误，避免影响队列后续任务
-    return run;
-  }
-
   async function fetchJSON(url) {
-    return queueRequest(() => fetchWithRetry(url));
-  }
-
-  /**
-   * fetchWithRetry：实际发起请求；命中 429 时按 Retry-After 响应头
-   * （若服务端提供）或指数退避（500ms → 1000ms → 2000ms）等待后重试，
-   * 最多重试 RETRY_MAX_ATTEMPTS 次；其他非 2xx 状态码不重试，直接抛出。
-   */
-  async function fetchWithRetry(url) {
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetch(url, {
-        credentials: 'include', headers: { 'Accept': 'application/json' },
-      });
-      if (res.ok) return res.json();
-      if (res.status === 429 && attempt < RETRY_MAX_ATTEMPTS) {
-        const retryAfter = Number(res.headers.get('Retry-After'));
-        const delay = Number.isFinite(retryAfter) && retryAfter > 0
-            ? retryAfter * 1000
-            : RETRY_BASE_DELAY * Math.pow(2, attempt);
-        await sleep(delay);
-        continue;
-      }
-      throw new Error('HTTP ' + res.status);
-    }
+    const res = await fetch(url, {
+      credentials: 'include', headers: { 'Accept': 'application/json' },
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
   }
 
   async function apiSend(url, method, params, extraHeaders) {
@@ -346,6 +297,44 @@
       ME_USERNAME = (s.current_user && s.current_user.username) || '';
     } catch (e) { ME_USERNAME = ''; }
     return ME_USERNAME;
+  }
+
+  /* ============ 2.5 嵌套树 API 封装 ============ */
+  /**
+   * fetchNestedTree：获取话题的嵌套树形结构（权威树 API）。
+   * @param {number} topicId - 话题 ID
+   * @param {number} page - 分页号（0 表示第一页）
+   * @returns {Promise<{roots: Array, has_more_roots: boolean, page: number, topic: object, opPost: object}>}
+   */
+  async function fetchNestedTree(topicId, page = 0) {
+    let url = `${BASE}/n/-/${topicId}.json?sort=old`;
+    if (page > 0) url += `&page=${page}`;
+    return await fetchJSON(url);
+  }
+
+  /**
+   * fetchNestedChildren：获取指定帖子的所有直接回复（用于"展示更多"按钮）。
+   * @param {number} topicId - 话题 ID
+   * @param {number} postNumber - 帖子楼号
+   * @returns {Promise<{children: Array, has_more: boolean, page: number}>}
+   */
+  async function fetchNestedChildren(topicId, postNumber) {
+    const url = `${BASE}/n/-/${topicId}/children/${postNumber}.json?sort=old&page=0&depth=1`;
+    return await fetchJSON(url);
+  }
+
+  /**
+   * indexTree：递归将嵌套树数据索引到 idToPost Map。
+   * @param {Array} posts - 帖子数组（可能包含 children）
+   */
+  function indexTree(posts) {
+    if (!posts || !posts.length) return;
+    posts.forEach(post => {
+      idToPost.set(post.id, post);
+      if (post.children && post.children.length > 0) {
+        indexTree(post.children);
+      }
+    });
   }
 
   function likeInfo(p) {
@@ -495,248 +484,57 @@
     };
   }
 
-  /* ============ 5. 双向切片加载器 ============ */
+
+  /* ============ 6. 树形递归渲染 ============ */
   /**
-   * createSliceLoader：替换原先的顺序 pump 加载器。
-   *
-   * 核心思路：
-   *   - init() 获取完整 stream 数组（所有 post_id），同时拿到已读进度、1 楼原帖。
-   *   - calcWindow(targetPostNumber) 根据目标楼层在 stream 中的位置，计算初始渲染窗口：
-   *       [windowStart, windowEnd)  ← 均以 stream 下标表示
-   *     并让 upCursor = windowStart、downCursor = windowEnd，后续向两端扩展。
-   *   - fetchSlice(ids) 批量请求帖子数据，写入 cache。
-   *   - loadDown() / loadUp() 对外暴露：向下/向上各追加一批。
-   *     向上追加时返回 { posts, heightBefore } 以便调用方做高度补偿防跳动。
+   * renderNestedTree：递归渲染嵌套树结构。
+   * @param {Array} posts - 帖子数组（可能包含 children）
+   * @param {HTMLElement} container - DOM 容器
+   * @param {object} ctx - 全局上下文
+   * @param {number} depth - 当前树深度（用于缩进）
    */
-  function createSliceLoader(topicId) {
-    let stream = [];          // 全部 post_id（不含 1 楼）
-    let streamFull = [];      // 包含 1 楼的原始 stream
-    const cache = new Map();  // postId → post 数据
-    let topic = null;
+  function renderNestedTree(posts, container, ctx, depth = 0) {
+    if (!posts || !posts.length) return;
 
-    // 双向游标（stream 数组下标）
-    let upCursor = 0;         // 上方还能加载的起始位置（向上加载时往前移）
-    let downCursor = 0;       // 下方还能加载的起始位置（向下加载时往后移）
+    posts.forEach(post => {
+      const node = renderPost(post, depth > 0, ctx, depth);
+      container.appendChild(node);
+      ctx.tracker.observe(node);
+      ctx.nodeMap.set(post.post_number, node);
 
-    // 各方向是否已到达边界
-    let topReached = false;
-    let bottomReached = false;
-
-    // ---- 网络请求 ----
-    async function fetchSlice(ids) {
-      const missing = ids.filter((id) => !cache.has(id));
-      if (!missing.length) return;
-      for (let attempt = 0; attempt < 2 && missing.length; attempt++) {
-        const qs = missing.map((id) => `post_ids[]=${id}`).join('&');
-        try {
-          const part = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`);
-          part.post_stream.posts.forEach((p) => cache.set(p.id, p));
-        } catch (e) { /* 失败静默，由上层决策 */ }
-        // 重算 missing
-        const stillMissing = missing.filter((id) => !cache.has(id));
-        missing.length = 0;
-        stillMissing.forEach((id) => missing.push(id));
-      }
-    }
-
-    // ---- 初始化 ----
-    async function init() {
-      await ensureMe();
-      const res = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
-        method: 'GET',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: {
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Discourse-Present': 'true',
-          'Discourse-Track-View': 'true',
-          'Discourse-Track-View-Topic-Id': String(topicId),
-        },
-      });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const data = await res.json();
-      topic = data;
-      streamFull = data.post_stream.stream || [];
-      // stream 不含 1 楼（1 楼永久常驻，单独处理）
-      stream = streamFull.filter((id) => {
-        const cached = data.post_stream.posts.find((p) => p.id === id);
-        return !(cached && cached.post_number === 1);
-      });
-      data.post_stream.posts.forEach((p) => cache.set(p.id, p));
-
-      const op = (topic.details && topic.details.created_by && topic.details.created_by.username)
-          || (data.post_stream.posts.find((p) => p.post_number === 1) || {}).username
-          || null;
-      topic._opUsername = op;
-      topic._opPost = data.post_stream.posts.find((p) => p.post_number === 1) || null;
-      return topic;
-    }
-
-    /**
-     * calcWindow：根据目标楼层（post_number）计算初始切片窗口，
-     * 并预加载这批数据到 cache。
-     *
-     * 三种场景：
-     *   targetPostNumber == null → 未看过，从头加载（windowStart=0）
-     *   targetPostNumber > 0     → 跳转到指定楼层（居中对齐）
-     */
-    async function calcWindow(targetPostNumber) {
-      if (!targetPostNumber || targetPostNumber <= 1) {
-        // 场景 A：从头加载
-        upCursor = 0;
-        downCursor = Math.min(PAGE_SIZE, stream.length);
-        topReached = true;
-        bottomReached = downCursor >= stream.length;
-        const ids = stream.slice(0, downCursor);
-        await fetchSlice(ids);
-        return {
-          posts: ids.map((id) => cache.get(id)).filter(Boolean),
-          targetPostNumber: null,
-        };
+      // 递归渲染子回复
+      if (post.children && post.children.length > 0) {
+        const childrenEl = node.querySelector('.ldp-children');
+        renderNestedTree(post.children, childrenEl, ctx, depth + 1);
       }
 
-      // 场景 B/C：跳转到指定楼层 —— 找到其在 stream 中的下标
-      // 注意：targetPostNumber-2 只是"假设没有楼层被删除"时的近似值。
-      // 一旦帖子里有楼层被删除，post_number 和 stream 数组下标就不再一一对应，
-      // 窗口半径较小时（SLICE_RADIUS=20）这个偏差很容易让目标楼层落到窗口外，
-      // 导致最后 locatePost 找不到节点、无法自动滚动过去。
-      // 因此这里优先问服务端要一份"精确定位"的数据（Discourse 支持 post_number 参数，
-      // 会返回真实围绕该楼层的帖子），用返回的真实 post_id 在 stream 里 indexOf 拿到准确下标；
-      // 只有这次请求失败时才退回旧的估算法兜底。
-      let safeIdx = null;
-      try {
-        const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${targetPostNumber}`);
-        const anchorPosts = (anchor.post_stream && anchor.post_stream.posts) || [];
-        anchorPosts.forEach((p) => cache.set(p.id, p));
-        const exactPost = anchorPosts.find((p) => p.post_number === targetPostNumber);
-        if (exactPost) {
-          const idx = stream.indexOf(exactPost.id);
-          if (idx >= 0) safeIdx = idx;
-        }
-      } catch (e) { /* 精确定位请求失败，退回估算 */ }
-
-      if (safeIdx === null) {
-        const approxIdx = Math.max(0, targetPostNumber - 2); // stream 不含 1 楼，故 -2
-        safeIdx = Math.min(approxIdx, stream.length - 1);
+      // 渲染"展示更多"按钮
+      const remaining = (post.direct_reply_count || 0) - (post.children?.length || 0);
+      if (remaining > 0) {
+        renderLoadMoreButton(post, node, remaining, depth);
       }
-
-      // 窗口半径直接就是 SLICE_RADIUS（楼层数），目标楼层前后各约 20 楼
-      const halfWindow = SLICE_RADIUS;
-      let wStart = Math.max(0, safeIdx - halfWindow);
-      let wEnd = Math.min(stream.length, safeIdx + halfWindow);
-
-      upCursor = wStart;
-      downCursor = wEnd;
-      topReached = wStart === 0;
-      bottomReached = wEnd >= stream.length;
-
-      let ids = stream.slice(wStart, wEnd);
-      await fetchSlice(ids);
-
-      // 尝试精确定位 targetPostNumber（用已加载数据校正）
-      let exactTargetId = null;
-      for (const id of ids) {
-        const p = cache.get(id);
-        if (p && p.post_number === targetPostNumber) { exactTargetId = id; break; }
-      }
-
-      // 兜底：极端情况下（比如精确定位请求也失败、又叠加估算偏差）目标仍不在窗口内，
-      // 按 SLICE_RADIUS 为步长向两侧各多扩展一批，尽量避免彻底找不到目标
-      const EXPAND_MAX = 3;
-      for (let i = 0; i < EXPAND_MAX && !exactTargetId && !(topReached && bottomReached); i++) {
-        if (!bottomReached) {
-          const end = Math.min(wEnd + halfWindow, stream.length);
-          const extra = stream.slice(wEnd, end);
-          if (extra.length) {
-            await fetchSlice(extra);
-            ids = ids.concat(extra);
-            wEnd = end;
-            downCursor = wEnd;
-            bottomReached = wEnd >= stream.length;
-          } else {
-            bottomReached = true;
-          }
-        }
-        for (const id of ids) {
-          const p = cache.get(id);
-          if (p && p.post_number === targetPostNumber) { exactTargetId = id; break; }
-        }
-        if (exactTargetId || (topReached && bottomReached)) break;
-
-        if (!topReached) {
-          const start = Math.max(0, wStart - halfWindow);
-          const extra = stream.slice(start, wStart);
-          if (extra.length) {
-            await fetchSlice(extra);
-            ids = extra.concat(ids);
-            wStart = start;
-            upCursor = wStart;
-            topReached = wStart === 0;
-          } else {
-            topReached = true;
-          }
-        }
-        for (const id of ids) {
-          const p = cache.get(id);
-          if (p && p.post_number === targetPostNumber) { exactTargetId = id; break; }
-        }
-      }
-
-      return {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        targetPostNumber,
-        targetPostId: exactTargetId,
-      };
-    }
-
-    /** 向下追加一批 */
-    async function loadDown() {
-      if (bottomReached) return { posts: [], done: true };
-      const end = Math.min(downCursor + PAGE_SIZE, stream.length);
-      const ids = stream.slice(downCursor, end);
-      await fetchSlice(ids);
-      downCursor = end;
-      bottomReached = downCursor >= stream.length;
-      return {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        done: bottomReached,
-      };
-    }
-
-    /** 向上追加一批（需调用方做高度补偿） */
-    async function loadUp() {
-      if (topReached) return { posts: [], done: true };
-      const start = Math.max(0, upCursor - PAGE_SIZE);
-      const ids = stream.slice(start, upCursor);
-      await fetchSlice(ids);
-      upCursor = start;
-      topReached = upCursor === 0;
-      return {
-        posts: ids.map((id) => cache.get(id)).filter(Boolean),
-        done: topReached,
-      };
-    }
-
-    return {
-      fetchSlice,
-      loadDown,
-      loadUp,
-      get topic() { return topic; },
-      get topReached() { return topReached; },
-      get bottomReached() { return bottomReached; },
-      get cache() { return cache; },
-      get stream() { return stream; },
-      set stream(val) { stream = val; },
-      // 允许外部设置游标状态（用于阶段2初始化）
-      set upCursor(val) { upCursor = val; },
-      set downCursor(val) { downCursor = val; },
-      set topReached(val) { topReached = val; },
-      set bottomReached(val) { bottomReached = val; },
-    };
+    });
   }
 
-  /* ============ 6. 楼层归位 ============ */
+  /**
+   * renderLoadMoreButton：渲染"展示更多回复"按钮。
+   * @param {object} post - 父帖子数据
+   * @param {HTMLElement} node - 父帖子 DOM 节点
+   * @param {number} remaining - 剩余未加载数量
+   * @param {number} depth - 树深度
+   */
+  function renderLoadMoreButton(post, node, remaining, depth) {
+    const actionsEl = node.querySelector(':scope > .ldp-sub-actions');
+    if (!actionsEl) return;
+
+    actionsEl.style.display = 'block';
+    const btn = actionsEl.querySelector('.ldp-load-more-replies');
+    if (btn) {
+      btn.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
+    }
+  }
+
+  /* ============ 7. 楼层归位（已废弃，保留用于扁平流降级） ============ */
   function attachPost(p, ctx) {
     if (p.post_number === 1) {
       // 1 楼永久常驻：已存在则跳过（防止重复渲染）
@@ -765,23 +563,36 @@
     if (p.reply_count > 0) ctx.repliesIO.observe(node);
   }
 
-  function reflowPending(ctx) {
-    if (!ctx.pending.length) return;
-    const rest = [];
-    ctx.pending.forEach((it) => {
-      const child = ctx.nodeMap.get(it.num);
-      const parent = ctx.nodeMap.get(it.parent);
-      if (child && parent) {
-        parent.querySelector(':scope > .ldp-children').appendChild(child);
-      } else {
-        rest.push(it);
-      }
-    });
-    ctx.pending = rest;
-  }
-
   /* ============ 7. 渲染单条 ============ */
-  function renderPost(p, isReply, ctx) {
+  /**
+   * renderPost：渲染单个帖子节点。
+   * @param {object} p - 帖子数据
+   * @param {boolean} isReply - 是否是回复（已废弃，兼容性保留）
+   * @param {object} ctx - 全局上下文
+   * @param {number} depth - 树深度（用于缩进）
+   */
+  function renderPost(p, isReply, ctx, depth = 0) {
+    // 检测已删除的评论（缺少作者信息或内容）
+    const isDeleted = !p.username || !p.cooked || p.deleted_at;
+
+    if (isDeleted) {
+      // 渲染已删除评论的占位符
+      const node = document.createElement('div');
+      node.className = 'ldp-post ldp-reply';
+      node.dataset.postId = p.id;
+      node.dataset.postNumber = p.post_number;
+      node.style.opacity = '0.5';
+      node.innerHTML = `
+        <div class="ldp-post-head">
+          <span class="ldp-author" style="opacity: 0.5;">（帖子已被作者删除）</span>
+          <span class="ldp-floor">#${p.post_number}</span>
+        </div>
+        <div class="ldp-children"></div>
+      `;
+      return node;
+    }
+
+    // 正常评论的渲染逻辑
     const avatar = p.avatar_template
         ? BASE + p.avatar_template.replace('{size}', '48') : '';
     const { count, acted, canAct } = likeInfo(p);
@@ -808,7 +619,7 @@
     const canBoost = p.can_boost === true;
 
     const node = document.createElement('div');
-    node.className = 'ldp-post' + (isReply ? ' ldp-reply' : '');
+    node.className = 'ldp-post' + (depth > 0 ? ' ldp-reply' : '');
     node.dataset.postId = p.id;
     node.dataset.postNumber = p.post_number;
     node.innerHTML = `
@@ -912,33 +723,60 @@
     });
   }
 
-  /* ============ 9. 楼中楼分批渲染 ============ */
-  function renderSubReplyBatch(postNumber, ctx) {
-    const state = ctx.subReplyState.get(postNumber);
-    const parentNode = ctx.nodeMap.get(postNumber)
-        || ctx.topicEl.querySelector(`.ldp-post[data-post-number="${postNumber}"]`);
-    if (!state || !parentNode) return;
+  /* ============ 9. 加载剩余子回复 ============ */
+  /**
+   * loadAllChildren：加载指定帖子的所有剩余子回复。
+   * @param {number} postId - 帖子 ID
+   * @param {number} postNumber - 帖子楼号
+   * @param {HTMLElement} button - "展示更多"按钮
+   * @param {object} ctx - 全局上下文
+   */
+  async function loadAllChildren(postId, postNumber, button, ctx) {
+    button.disabled = true;
+    button.textContent = '加载中...';
+    try {
+      const response = await fetchNestedChildren(ctx.topicId, postNumber);
+      const post = idToPost.get(postId);
+      if (!post) throw new Error('帖子数据未找到');
 
-    const start = state.renderedCount;
-    const limit = start === 0 ? SUB_REPLY_INITIAL_SIZE : SUB_REPLY_PAGE_SIZE;
-    const batch = state.all.slice(start, start + limit);
+      // 更新内存中的 children 数组
+      post.children = response.children;
+      indexTree(response.children);
 
-    batch.forEach((rp) => {
-      if (!rp.reply_to_post_number) rp.reply_to_post_number = postNumber;
-      attachPost(rp, ctx);
-    });
-    state.renderedCount += batch.length;
-    reflowPending(ctx);
+      // 重新渲染子回复
+      const postNode = button.closest('.ldp-post');
+      const childrenEl = postNode.querySelector('.ldp-children');
+      childrenEl.innerHTML = '';
+      renderNestedTree(response.children, childrenEl, ctx, 1);
 
-    const actionEl = parentNode.querySelector(':scope > .ldp-sub-actions');
-    const btnEl = actionEl && actionEl.querySelector('.ldp-load-more-replies');
-    const remaining = state.all.length - state.renderedCount;
-    if (remaining > 0) {
-      if (actionEl) actionEl.style.display = 'block';
-      if (btnEl) btnEl.textContent = `展示更多回复（还剩 ${remaining} 条） ↓`;
-    } else if (actionEl) {
-      actionEl.style.display = 'none';
+      // 移除按钮
+      button.remove();
+    } catch (e) {
+      alert('加载失败：' + e.message);
+      button.disabled = false;
+      button.textContent = '展示更多回复 ↓';
     }
+  }
+
+  /* ============ 9. 楼层归位辅助函数 ============ */
+  /**
+   * reflowPending：重新组织等待父节点的帖子。
+   * 当子帖子的父节点还未渲染时，会先放到 pending 数组，
+   * 父节点渲染后调用此函数重新组织DOM结构。
+   */
+  function reflowPending(ctx) {
+    if (!ctx.pending || !ctx.pending.length) return;
+    const rest = [];
+    ctx.pending.forEach((it) => {
+      const child = ctx.nodeMap.get(it.num);
+      const parent = ctx.nodeMap.get(it.parent);
+      if (child && parent) {
+        parent.querySelector(':scope > .ldp-children').appendChild(child);
+      } else {
+        rest.push(it);
+      }
+    });
+    ctx.pending = rest;
   }
 
   /* ============ 10. 事件委托 ============ */
@@ -953,7 +791,9 @@
       const moreBtn = e.target.closest('.ldp-load-more-replies');
       if (moreBtn) {
         const post = moreBtn.closest('.ldp-post');
-        renderSubReplyBatch(+post.dataset.postNumber, ctx);
+        const postId = +post.dataset.postId;
+        const postNumber = +post.dataset.postNumber;
+        await loadAllChildren(postId, postNumber, moreBtn, ctx);
         return;
       }
 
@@ -1091,14 +931,18 @@
               actions_summary: [],
               boosts: [],
               can_boost: true,
-            }, !isTopLevel, ctx);
+            }, !isTopLevel, ctx, isTopLevel ? 0 : 1);
             newNode.classList.add('ldp-flash');
             if (isTopLevel) {
               ctx.commentsEl.prepend(newNode);
               newNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
             } else {
               const childrenContainer = postNode.querySelector(':scope > .ldp-children');
-              childrenContainer.prepend(newNode);
+              if (childrenContainer) {
+                childrenContainer.prepend(newNode);
+              } else {
+                console.warn('Parent post has no .ldp-children container');
+              }
             }
             ctx.nodeMap.set(postData.post_number, newNode);
             ctx.tracker.observe(newNode);
@@ -1118,46 +962,6 @@
         return;
       }
     });
-  }
-
-  /* ============ 11. 楼中楼补全（分批渲染 + 节流 + 停顿检测） ============ */
-  function createRepliesIO(ctx) {
-    const fetched = new Set();
-    const hoverTimers = new Map();
-
-    return new IntersectionObserver((entries) => {
-      entries.forEach((en) => {
-        const postId = en.target.dataset.postId;
-        const postNumber = +en.target.dataset.postNumber;
-        if (!postId) return;
-
-        if (en.isIntersecting) {
-          if (fetched.has(postId) || hoverTimers.has(postId)) return;
-          const timer = setTimeout(async () => {
-            hoverTimers.delete(postId);
-            fetched.add(postId);
-            const loadingEl = en.target.querySelector(':scope > .ldp-sub-loading');
-            if (loadingEl) loadingEl.style.display = 'block';
-            try {
-              const replies = await fetchJSON(`${BASE}/posts/${postId}/replies.json`);
-              if (loadingEl) loadingEl.style.display = 'none';
-              if (!replies || !replies.length) return;
-              ctx.subReplyState.set(postNumber, { all: replies, renderedCount: 0 });
-              renderSubReplyBatch(postNumber, ctx);
-            } catch (e) {
-              if (loadingEl) loadingEl.style.display = 'none';
-              fetched.delete(postId);
-            }
-          }, REPLIES_HOVER_DELAY);
-          hoverTimers.set(postId, timer);
-        } else {
-          if (hoverTimers.has(postId)) {
-            clearTimeout(hoverTimers.get(postId));
-            hoverTimers.delete(postId);
-          }
-        }
-      });
-    }, { root: ctx.scrollRoot, rootMargin: '120px', threshold: 0.1 });
   }
 
   /* ============ 12. 收藏 ============ */
@@ -1231,145 +1035,6 @@
         <div class="ldp-sk ldp-sk-line ldp-sk-w60"></div>
       </div>
     </div>`;
-
-  /* ============ 13. 定位：展开楼中楼并高亮目标 ============ */
-  /**
-   * waitForScrollEnd：等待某个可滚动容器的滚动真正"停下来"。
-   *
-   * scrollIntoView({behavior:'smooth'}) 是异步、由浏览器驱动的动画，调用后
-   * JS 会立刻继续往下执行，并不会等动画播完。如果外层只用 requestAnimationFrame
-   * 等一帧就认为"滚动已完成"，实际上动画可能还要再跑几百毫秒——这段时间如果提前
-   * 解除 isAnchoring 锁，滚动过程中途经的 scrollTop 变化会误触发 pumpUp/pumpDown，
-   * 新插入的楼层会和还在进行中的滚动动画打架，把目标楼层挤出视口。
-   *
-   * 做法：监听 scroll 事件，只要连续 IDLE_MS 内没有新的 scroll 事件，就认为动画已经
-   * 停止；同时加一个安全兜底超时，防止极端情况下（例如浏览器完全不触发 scroll 事件）
-   * 一直等不到结束。
-   */
-  function waitForScrollEnd(el, timeoutMs = 1200) {
-    const IDLE_MS = 120;
-    return new Promise((resolve) => {
-      let done = false;
-      let idleTimer = null;
-      const finish = () => {
-        if (done) return;
-        done = true;
-        el.removeEventListener('scroll', onScroll);
-        clearTimeout(idleTimer);
-        clearTimeout(safety);
-        resolve();
-      };
-      const onScroll = () => {
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(finish, IDLE_MS);
-      };
-      el.addEventListener('scroll', onScroll, { passive: true });
-      // 若 scrollIntoView 判定目标已在原地（无需滚动），可能压根不会触发 scroll 事件，
-      // 这里先给一次初始 idle 计时，避免无限等待
-      idleTimer = setTimeout(finish, IDLE_MS);
-      const safety = setTimeout(finish, timeoutMs);
-    });
-  }
-
-  /**
-   * locatePost：在已渲染完毕后，定位到指定楼层。
-   *
-   * 步骤：
-   *   1. 在 nodeMap 里找目标楼层节点；
-   *   2. 若目标是楼中楼（有 reply_to_post_number），先确保父楼层的楼中楼已完全展开；
-   *   3. 滚动到目标节点并触发 ldp-flash 高亮。
-   *
-   * @param {number} targetPostNumber  - 目标楼层号
-   * @param {object} ctx               - 全局上下文
-   */
-  async function locatePost(targetPostNumber, ctx) {
-    if (!targetPostNumber || targetPostNumber <= 1) return;
-
-    // 等待 DOM 稳定（requestAnimationFrame 后执行）
-    await new Promise((r) => requestAnimationFrame(r));
-
-    let targetNode = ctx.nodeMap.get(targetPostNumber);
-
-    if (!targetNode) {
-      // 节点可能尚未渲染（切片窗口未覆盖），直接放弃（极端边界情况）
-      return;
-    }
-
-    // 检查目标是否是楼中楼（其 DOM 父节点是否在 .ldp-children 内）
-    const parentContainer = targetNode.parentElement;
-    const isSubReply = parentContainer && parentContainer.classList.contains('ldp-children');
-
-    if (isSubReply) {
-      // 找到父楼层的 post_number
-      const parentPostNode = parentContainer.closest('.ldp-post');
-      if (parentPostNode) {
-        const parentPostNumber = +parentPostNode.dataset.postNumber;
-        // 确保该父楼层的楼中楼已全部展开（把剩余未渲染的子回复全部渲出来）
-        const state = ctx.subReplyState.get(parentPostNumber);
-        if (state) {
-          // 循环渲染直到目标 post_number 被渲染或所有子回复渲染完
-          while (state.renderedCount < state.all.length) {
-            renderSubReplyBatch(parentPostNumber, ctx);
-            // 检查目标节点是否已经渲染出来
-            if (ctx.nodeMap.has(targetPostNumber)) break;
-          }
-          // 更新 targetNode（可能刚刚被渲染出来）
-          targetNode = ctx.nodeMap.get(targetPostNumber);
-        } else {
-          // subReplyState 还没拉取，需要手动触发一次 replies 接口加载
-          const parentPostId = parentPostNode.dataset.postId;
-          if (parentPostId) {
-            try {
-              const loadingEl = parentPostNode.querySelector(':scope > .ldp-sub-loading');
-              if (loadingEl) loadingEl.style.display = 'block';
-              const replies = await fetchJSON(`${BASE}/posts/${parentPostId}/replies.json`);
-              if (loadingEl) loadingEl.style.display = 'none';
-              if (replies && replies.length) {
-                ctx.subReplyState.set(parentPostNumber, { all: replies, renderedCount: 0 });
-                // 全量渲染直到目标出现
-                const st = ctx.subReplyState.get(parentPostNumber);
-                while (st.renderedCount < st.all.length) {
-                  renderSubReplyBatch(parentPostNumber, ctx);
-                  if (ctx.nodeMap.has(targetPostNumber)) break;
-                }
-                targetNode = ctx.nodeMap.get(targetPostNumber);
-              }
-            } catch (e) { /* 忽略，定位失败不阻塞 */ }
-          }
-        }
-      }
-    }
-
-    if (!targetNode) return;
-
-    // 等一帧确保 DOM 已更新
-    await new Promise((r) => requestAnimationFrame(r));
-
-    targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-    // 等滚动动画真正停下来，再继续（见 waitForScrollEnd 注释）。
-    // 这一步必须在这里 await 完，locatePost 才能返回——外层就是靠
-    // "await locatePost(...)" 来判断何时可以安全解锁 isAnchoring 的。
-    await waitForScrollEnd(ctx.scrollRoot);
-
-    // 滚动已经稳定，此时再判断目标是否真的进入视口并触发高亮：
-    // 用临时 IntersectionObserver 监听目标节点进入视口，
-    // 一旦 intersectionRatio >= 0.5 即认为已到位，触发 flash 并立即解绑。
-    const flashObs = new IntersectionObserver((entries, obs) => {
-      const en = entries.find((e) => e.isIntersecting && e.intersectionRatio >= 0.5);
-      if (!en) return;
-      obs.disconnect();
-      const node = en.target;
-      node.classList.remove('ldp-flash');
-      void node.offsetWidth; // 强制 reflow，确保动画重播
-      node.classList.add('ldp-flash');
-      setTimeout(() => node.classList.remove('ldp-flash'), 1700);
-    }, { root: ctx.scrollRoot, threshold: [0.5] });
-    flashObs.observe(targetNode);
-    // 安全兜底：1.5s 后若仍未触发则强制解绑，防止 observer 泄漏
-    // （滚动已经稳定，正常情况下应该几乎立刻就能命中一次 intersecting 回调）
-    setTimeout(() => flashObs.disconnect(), 1500);
-  }
 
   /* ============ 14. 弹窗主体 ============ */
   let CURRENT_OVERLAY = null;
@@ -1458,31 +1123,19 @@
     const fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
     const fOpenLink = overlay.querySelector('.ldp-f-open');
 
-    const loader = createSliceLoader(topicId);
     const tracker = createReadTracker(topicId, body);
     const ctx = {
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl,
       scrollRoot: body,
       nodeMap: new Map(),
-      pending: [],
       tracker,
       totalComments: 0,
-      repliesIO: null,
-      subReplyState: new Map(),
       footerReplyCountEl: fReplyCountEl,
     };
-    ctx.repliesIO = createRepliesIO(ctx);
-
-    // 双向加载节流标志
-    let loadingDown = false, loadingUp = false;
-    let downDone = false, upDone = false;
-    // 初始化锚定锁：calcWindow 渲染+定位完成前禁止哨兵/scroll 误触发加载
-    let isAnchoring = false;
 
     const close = () => {
       abortController.abort(); // 取消所有进行中的请求
       tracker.stop();
-      ctx.repliesIO.disconnect();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
       document.removeEventListener('keydown', onEsc);
@@ -1502,301 +1155,542 @@
       }
     }
 
-    /* ---- 向下加载 ---- */
-    async function pumpDown() {
-      if (isAnchoring || loadingDown || downDone) return;
-      loadingDown = true;
-      loadDownTip.classList.add('show');
-      try {
-        const { posts, done } = await loader.loadDown();
-        posts.forEach((p) => attachPost(p, ctx));
-        reflowPending(ctx);
-        downDone = done;
-        if (done) {
-          loadDownTip.classList.remove('show');
-          showBottomTip();
-        }
-      } catch (e) { /* 静默 */ }
-      finally {
-        loadingDown = false;
-        loadDownTip.classList.remove('show');
-      }
-    }
-
-    /* ---- 向上加载（防跳动） ---- */
-    async function pumpUp() {
-      if (isAnchoring || loadingUp || upDone) return;
-      loadingUp = true;
-      loadUpTip.classList.add('show');
-      try {
-        const oldScrollHeight = body.scrollHeight;
-        const oldScrollTop = body.scrollTop;
-
-        // 向上加载时只把"直接回复1楼"的顶层评论插入主评论流；
-        // 楼中楼（嵌套回复，reply_to_post_number 指向的是别的楼层而不是1楼）
-        // 交给已有的 repliesIO 机制——等它的父楼层随后被加载、进入视口时，
-        // 会按需通过 /posts/{id}/replies.json 拉取，和 pumpDown 效果一致。
-        // 原因：向上是"从后往前"取，如果这一批混进了嵌套回复，它的父楼层
-        // （post_number 更小）很可能还没加载出来，attachPost 只能先把它硬塞成
-        // 顶层评论、等父楼层加载后再靠 reflowPending 挪过去——会出现同一条
-        // 评论先在顶层露一下脸、然后又"消失"重新出现在楼中楼里的跳动感。
-        //
-        // 由于一批 PAGE_SIZE 条里可能全是嵌套回复（没有一条顶层），
-        // 这种情况下自动再往上多取一批，保证每次 pumpUp 都有可见进展。
-        const PUMP_UP_EXPAND_MAX = 5;
-        let posts = [];
-        let done = false;
-        let topLevelPosts = [];
-        for (let i = 0; i <= PUMP_UP_EXPAND_MAX; i++) {
-          const res = await loader.loadUp();
-          posts = posts.concat(res.posts);
-          done = res.done;
-          topLevelPosts = posts.filter((p) => !p.reply_to_post_number || p.reply_to_post_number === 1);
-          if (topLevelPosts.length > 0 || done) break;
-        }
-
-        if (topLevelPosts.length > 0) {
-          // 把帖子 prepend 到 commentsEl 前面（保持时序正确）
-          // 先反序：原来 posts 是从旧到新，prepend 需要从新到旧依次插入
-          const fragment = document.createDocumentFragment();
-          const tempCtx = Object.assign({}, ctx, {
-            commentsEl: fragment, // 让 attachPost 内部直接 append 到 fragment
-            nodeMap: ctx.nodeMap,
-            topicEl: ctx.topicEl,
-          });
-          topLevelPosts.forEach((p) => attachPost(p, tempCtx));
-          reflowPending(tempCtx);
-
-          // 一次性插入到 commentsEl 顶部
-          commentsEl.prepend(fragment);
-
-          // 高度补偿：防止向上插入内容导致视口跳动
-          requestAnimationFrame(() => {
-            const newScrollHeight = body.scrollHeight;
-            body.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
-          });
-        }
-
-        upDone = done;
-        if (done) {
-          loadUpTip.classList.remove('show');
-          if (!body.querySelector('.ldp-top-tip')) {
-            const tip = document.createElement('div');
-            tip.className = 'ldp-top-tip';
-            tip.textContent = '已是最早的评论';
-            commentsEl.before(tip);
-          }
-        }
-      } catch (e) { /* 静默 */ }
-      finally {
-        loadingUp = false;
-        loadUpTip.classList.remove('show');
-      }
-    }
-
-    /* ---- IntersectionObserver 监听上下哨兵 ---- */
-    const sentinelDownIO = new IntersectionObserver(
-        (entries) => { if (entries.some((en) => en.isIntersecting)) pumpDown(); },
-        { root: body, rootMargin: '300px' }
-    );
-    const sentinelUpIO = new IntersectionObserver(
-        (entries) => { if (entries.some((en) => en.isIntersecting)) pumpUp(); },
-        { root: body, rootMargin: '600px' }
-    );
-
-    /* ---- scroll 事件兜底 ---- */
-    body.addEventListener('scroll', () => {
-      if (isAnchoring) return;
-      const { scrollTop, scrollHeight, clientHeight } = body;
-      if (scrollHeight - scrollTop - clientHeight < 400) pumpDown();
-      if (scrollTop < 800) pumpUp();
-    }, { passive: true });
-
-    /* ---- 主初始化流程（两阶段并行加载） ---- */
+    /* ---- 主初始化流程（嵌套树 API 加载） ---- */
     let topicData = null;
 
     try {
-      // ====== 阶段 1：快速渲染 1 楼 ======
-      // 并行发起：topic.json + ensureMe()
-      const topicPromise = fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
-        method: 'GET',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: {
-          'Accept': 'application/json, text/javascript, */*; q=0.01',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Discourse-Present': 'true',
-          'Discourse-Track-View': 'true',
-          'Discourse-Track-View-Topic-Id': String(topicId),
-        },
-        signal: abortController.signal,
-      }).then(res => {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      });
+      // ====== 阶段 1：加载嵌套树数据 ======
+      const mePromise = ensureMe().catch(() => {});
 
-      const mePromise = ensureMe().catch(() => {}); // 失败静默，不影响加载
+      // 处理跳转到指定楼层的情况（包含通知跳转和已读跳未读）
+      let resolvedTarget = targetPostNumber;
+      let cachedTopicDetail = null;  // 缓存"已读跳未读"阶段拉到的话题详情，供后面复用，避免重复请求
 
-      // 等待 topic.json 返回
-      topicData = await topicPromise;
+      // 如果是"已读跳未读"场景（targetPostNumber === 0），需要先获取已读进度
+      if (targetPostNumber === 0) {
+        // 先获取话题元数据以确定已读进度
+        try {
+          const metaRes = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+              'Accept': 'application/json, text/javascript, */*; q=0.01',
+              'X-Requested-With': 'XMLHttpRequest',
+              'Discourse-Present': 'true',
+              'Discourse-Track-View': 'true',
+              'Discourse-Track-View-Topic-Id': String(topicId),
+            },
+          });
+          if (metaRes.ok) {
+            const metaData = await metaRes.json();
+            cachedTopicDetail = metaData;
+            const lastRead = metaData.last_read_post_number || 0;
+            const highest = metaData.highest_post_number || 1;
+            // 如果有未读评论，跳转到第一条未读
+            if (lastRead > 0 && lastRead < highest) {
+              resolvedTarget = lastRead + 1;
+            }
+          }
+        } catch (e) {
+          // 获取已读进度失败，忽略并从头加载
+        }
+      }
 
-      // 提取基本信息
-      const opPost = topicData.post_stream.posts.find(p => p.post_number === 1);
-      const opUsername = (topicData.details && topicData.details.created_by && topicData.details.created_by.username)
-          || (opPost && opPost.username) || null;
+      // 如果需要跳转到指定楼层（通知跳转或已读跳未读）
+      if (resolvedTarget && resolvedTarget > 1) {
+        // 使用扁平流 API 精确定位
+        try {
+          const anchorUrl = `${BASE}/t/${topicId}.json?post_number=${resolvedTarget}&track_visit=true&forceLoad=true`;
+          const anchorRes = await fetch(anchorUrl, {
+            method: 'GET',
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {
+              'Accept': 'application/json',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+          });
+          if (!anchorRes.ok) throw new Error('HTTP ' + anchorRes.status);
+          const anchorData = await anchorRes.json();
 
-      ctx.op = opUsername;
-      ctx.totalComments = Math.max(0, (topicData.posts_count || 1) - 1);
+          // 提取基本信息
+          let opPost = anchorData.post_stream.posts.find(p => p.post_number === 1);
+          const targetPost = anchorData.post_stream.posts.find(p => p.post_number === resolvedTarget);
+          const opNotInWindow = !opPost;  // 标记楼主是否不在当前窗口
 
-      // 更新标题和元数据
-      overlay.querySelector('.ldp-title').textContent = topicData.title;
-      overlay.querySelector('.ldp-meta').textContent =
-          `${topicData.posts_count} 帖 · ${topicData.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
-      updateCommentsHeader(ctx);
+          // 如果窗口中不包含楼主，从话题详情中获取（优先复用前面已拉取的缓存，避免重复请求）
+          if (opNotInWindow) {
+            if (cachedTopicDetail) {
+              opPost = cachedTopicDetail.post_stream.posts.find(p => p.post_number === 1);
+            } else {
+              try {
+                const topicDetailRes = await fetch(`${BASE}/t/${topicId}.json?track_visit=true&forceLoad=true`, {
+                  method: 'GET',
+                  credentials: 'include',
+                  cache: 'no-store',
+                  headers: { 'Accept': 'application/json' },
+                });
 
-      // 渲染 1 楼
-      if (opPost) {
-        const opNode = renderPost(opPost, false, ctx);
+                if (topicDetailRes.ok) {
+                  const topicDetail = await topicDetailRes.json();
+                  cachedTopicDetail = topicDetail;
+                  opPost = topicDetail.post_stream.posts.find(p => p.post_number === 1);
+                }
+              } catch (e) {
+                console.error('加载楼主帖子失败:', e);
+              }
+            }
+          }
+
+          // 如果仍然没有楼主数据，使用占位符
+          if (!opPost) {
+            const opUsername = (anchorData.details && anchorData.details.created_by && anchorData.details.created_by.username) || '未知';
+            opPost = {
+              id: anchorData.post_stream.stream ? anchorData.post_stream.stream[0] : 0,
+              post_number: 1,
+              username: opUsername,
+              name: opUsername,
+              cooked: '<p style="opacity: 0.5;">楼主帖子加载失败</p>',
+              created_at: anchorData.created_at || new Date().toISOString(),
+              actions_summary: [],
+              boosts: [],
+              can_boost: false,
+            };
+          }
+
+          ctx.op = opPost.username;
+          ctx.totalComments = anchorData.posts_count - 1;
+
+          // 更新标题和元数据
+          overlay.querySelector('.ldp-title').textContent = anchorData.title;
+          overlay.querySelector('.ldp-meta').textContent =
+              `${anchorData.posts_count} 帖 · ${anchorData.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
+          updateCommentsHeader(ctx);
+
+          // 渲染 1 楼
+          const opNode = renderPost(opPost, false, ctx, 0);
+          ctx.topicEl.appendChild(opNode);
+          ctx.nodeMap.set(1, opNode);
+          ctx.tracker.observe(opNode);
+
+          // 立即移除骨架屏
+          maskEl.classList.add('hide');
+          setTimeout(() => maskEl.remove(), 300);
+
+          // 绑定底部操作栏
+          fOpenLink.href = `${BASE}/t/${topicId}`;
+          bindBookmark(fBookmarkBtn, anchorData);
+          bindFooterLike(fLikeBtn, fLikeCountEl, opPost);
+
+          const canBoostOp = !!(opPost && opPost.can_boost);
+          if (!canBoostOp) { fBoostBtn.disabled = true; fBoostBtn.style.opacity = '0.4'; }
+          fBoostBtn.addEventListener('click', () => {
+            if (fBoostBtn.disabled) return;
+            const opNode = ctx.topicEl.querySelector('.ldp-post');
+            if (!opNode) return;
+            const wrap = opNode.querySelector(':scope > .ldp-boost-input-wrap');
+            if (!wrap) return;
+            const opening = !wrap.classList.contains('open');
+            wrap.classList.toggle('open', opening);
+            if (opening) { wrap.querySelector('.ldp-boost-input').focus(); wrap.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+          });
+
+          fReplyBtn.addEventListener('click', () => {
+            const opNode = ctx.topicEl.querySelector('.ldp-post');
+            if (!opNode) return;
+            const box = ensureReplyBox(opNode);
+            box.classList.toggle('open');
+            if (box.classList.contains('open')) { box.querySelector('textarea').focus(); box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+          });
+          footerEl.hidden = false;
+
+          bindActions(modal, ctx);
+          tracker.start();
+
+          // 初始化 pending 数组（用于构建楼中楼）
+          ctx.pending = [];
+          ctx.repliesIO = { observe: () => {}, disconnect: () => {} };  // 兼容占位
+
+          // 保存完整的帖子流（用于双向加载）
+          const streamFull = anchorData.post_stream.stream || [];
+          const stream = streamFull.filter(id => {
+            const cached = anchorData.post_stream.posts.find(p => p.id === id);
+            return !(cached && cached.post_number === 1);
+          });
+
+          // 初始化双向加载状态
+          const postCache = new Map();
+          anchorData.post_stream.posts.forEach(p => postCache.set(p.id, p));
+
+          let upCursor = 0;
+          let downCursor = stream.length;
+          let topReached = false;
+          let bottomReached = false;
+          let loadingDown = false;
+          let loadingUp = false;
+          let isAnchoring = true;  // 锚定锁：定位完成前禁止触发加载
+
+          // 计算已加载的楼层范围
+          const loadedPostIds = new Set(anchorData.post_stream.posts.map(p => p.id));
+          const firstLoadedId = anchorData.post_stream.posts[0]?.id;
+          const lastLoadedId = anchorData.post_stream.posts[anchorData.post_stream.posts.length - 1]?.id;
+
+          if (firstLoadedId && streamFull.includes(firstLoadedId)) {
+            upCursor = streamFull.indexOf(firstLoadedId);
+            topReached = upCursor === 0;
+          }
+          if (lastLoadedId && streamFull.includes(lastLoadedId)) {
+            downCursor = streamFull.indexOf(lastLoadedId) + 1;
+            bottomReached = downCursor >= streamFull.length;
+          }
+
+          // 渲染目标楼层周围的帖子（使用 attachPost 构建楼中楼关系）
+          loadingTip.classList.add('show');
+          anchorData.post_stream.posts.forEach(post => {
+            if (post.post_number === 1) return;  // 已渲染
+            attachPost(post, ctx);
+          });
+          reflowPending(ctx);
+          loadingTip.classList.remove('show');
+
+          // 定位到目标楼层
+          if (targetPost) {
+            const targetNode = ctx.nodeMap.get(resolvedTarget);
+            if (targetNode) {
+              targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              targetNode.classList.add('ldp-flash');
+              setTimeout(() => targetNode.classList.remove('ldp-flash'), 1700);
+            }
+          }
+
+          // ====== 添加双向加载逻辑 ======
+          async function fetchPosts(postIds) {
+            if (!postIds || !postIds.length) return [];
+            const qs = postIds.map(id => `post_ids[]=${id}`).join('&');
+            const res = await fetchJSON(`${BASE}/t/${topicId}/posts.json?${qs}`);
+            return res.post_stream.posts || [];
+          }
+
+          async function loadDown() {
+            if (isAnchoring || loadingDown || bottomReached || downCursor >= streamFull.length) return;
+            loadingDown = true;
+            loadDownTip.classList.add('show');
+            try {
+              const batch = streamFull.slice(downCursor, Math.min(downCursor + PAGE_SIZE, streamFull.length));
+              if (batch.length === 0) {
+                bottomReached = true;
+                showBottomTip();
+                return;
+              }
+
+              const posts = await fetchPosts(batch);
+              posts.forEach(p => {
+                if (p.post_number === 1 || loadedPostIds.has(p.id)) return;
+                loadedPostIds.add(p.id);
+                attachPost(p, ctx);
+              });
+              reflowPending(ctx);
+
+              downCursor += batch.length;
+              bottomReached = downCursor >= streamFull.length;
+
+              if (bottomReached) showBottomTip();
+            } catch (e) {
+              console.error('向下加载失败:', e);
+            } finally {
+              loadingDown = false;
+              loadDownTip.classList.remove('show');
+            }
+          }
+
+          async function loadUp() {
+            if (isAnchoring || loadingUp || topReached || upCursor <= 0) return;
+            loadingUp = true;
+            loadUpTip.classList.add('show');
+            try {
+              const oldScrollHeight = body.scrollHeight;
+              const oldScrollTop = body.scrollTop;
+
+              const start = Math.max(0, upCursor - PAGE_SIZE);
+              const batch = streamFull.slice(start, upCursor);
+              if (batch.length === 0) {
+                topReached = true;
+                if (!body.querySelector('.ldp-top-tip')) {
+                  const tip = document.createElement('div');
+                  tip.className = 'ldp-top-tip';
+                  tip.textContent = '已是最早的评论';
+                  commentsEl.before(tip);
+                }
+                return;
+              }
+
+              const posts = await fetchPosts(batch);
+
+              // 按 stream 顺序处理帖子（不要反转）
+              // streamFull 中的顺序：[id1, id2, id3...] 对应楼层号顺序
+              // fetchPosts 返回的帖子顺序可能与请求顺序不同，需要按 stream 顺序重新排序
+              const postIdToPost = new Map(posts.map(p => [p.id, p]));
+              const orderedPosts = batch
+                  .map(id => postIdToPost.get(id))
+                  .filter(Boolean);
+
+              const fragment = document.createDocumentFragment();
+              const tempCtx = Object.assign({}, ctx, {
+                commentsEl: fragment,
+                nodeMap: ctx.nodeMap,
+                topicEl: ctx.topicEl,
+              });
+
+              orderedPosts.forEach(p => {
+                if (p.post_number === 1 || loadedPostIds.has(p.id)) return;
+                loadedPostIds.add(p.id);
+                attachPost(p, tempCtx);
+              });
+              reflowPending(tempCtx);
+
+              commentsEl.prepend(fragment);
+
+              // 高度补偿
+              requestAnimationFrame(() => {
+                const newScrollHeight = body.scrollHeight;
+                body.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight);
+              });
+
+              upCursor = start;
+              topReached = upCursor === 0;
+
+              if (topReached && !body.querySelector('.ldp-top-tip')) {
+                const tip = document.createElement('div');
+                tip.className = 'ldp-top-tip';
+                tip.textContent = '已是最早的评论';
+                commentsEl.before(tip);
+              }
+            } catch (e) {
+              console.error('向上加载失败:', e);
+            } finally {
+              loadingUp = false;
+              loadUpTip.classList.remove('show');
+            }
+          }
+
+          // 监听滚动事件
+          if (!bottomReached) {
+            const sentinelDownIO = new IntersectionObserver(
+                (entries) => { if (entries.some(en => en.isIntersecting) && !isAnchoring) loadDown(); },
+                { root: body, rootMargin: '300px' }
+            );
+            sentinelDownIO.observe(downSentinel);
+          }
+
+          if (!topReached) {
+            const sentinelUpIO = new IntersectionObserver(
+                (entries) => { if (entries.some(en => en.isIntersecting) && !isAnchoring) loadUp(); },
+                { root: body, rootMargin: '600px' }
+            );
+            sentinelUpIO.observe(upSentinel);
+          }
+
+          body.addEventListener('scroll', () => {
+            if (isAnchoring) return;
+            const { scrollTop, scrollHeight, clientHeight } = body;
+            if (scrollHeight - scrollTop - clientHeight < 400) loadDown();
+            if (scrollTop < 800) loadUp();
+          }, { passive: true });
+
+          // 延迟解锁锚定（等待滚动动画完成）
+          setTimeout(() => {
+            isAnchoring = false;
+          }, 1200);
+
+          showBottomTip();
+
+        } catch (e) {
+          alert('加载失败：' + e.message);
+        }
+
+        await mePromise;
+        return;  // 跳转场景直接返回，不加载完整嵌套树
+      }
+
+      // 正常浏览：加载嵌套树 API
+      const nestedResponse = await fetchNestedTree(topicId, 0);
+
+      // 检查服务器返回的是嵌套树还是扁平流（私有话题等）
+      if (nestedResponse.roots && nestedResponse.roots.length >= 0) {
+        // 成功获取嵌套树数据
+        const opPost = nestedResponse.op_post;
+        let roots = nestedResponse.roots;
+        const topicMeta = nestedResponse.topic;
+        nestedHasMoreRoots = nestedResponse.has_more_roots || false;
+        nestedRootsPage = nestedResponse.page || 0;
+        nestedTreeRoots = roots;
+
+        if (!opPost) {
+          throw new Error('服务器返回数据缺少 OP 帖子');
+        }
+
+        // 建立混合索引
+        idToPost.clear();
+        idToPost.set(opPost.id, opPost);
+        indexTree(roots);
+
+        // 构造 topicData 对象（兼容后续逻辑）
+        topicData = {
+          id: topicMeta?.id || topicId,
+          title: topicMeta?.title || '',
+          posts_count: topicMeta?.posts_count || 1,
+          views: 0,
+          post_stream: {
+            posts: [opPost, ...roots],
+            stream: []
+          },
+          details: {
+            created_by: { username: opPost.username }
+          }
+        };
+
+        ctx.op = opPost.username;
+        ctx.totalComments = (topicMeta?.posts_count || 1) - 1;  // 总评论数 = 总帖子数 - 楼主
+
+        // 更新标题和元数据
+        overlay.querySelector('.ldp-title').textContent = topicMeta?.title || `话题 #${topicId}`;
+        overlay.querySelector('.ldp-meta').textContent =
+            `${topicMeta?.posts_count || 1} 帖 · 楼主 @${ctx.op || '?'}`;
+        updateCommentsHeader(ctx);
+
+        // 渲染 1 楼
+        const opNode = renderPost(opPost, false, ctx, 0);
         ctx.topicEl.appendChild(opNode);
         ctx.nodeMap.set(1, opNode);
-      }
+        ctx.tracker.observe(opNode);
 
-      // 立即移除骨架屏
-      maskEl.classList.add('hide');
-      setTimeout(() => maskEl.remove(), 300);
+        // 立即移除骨架屏
+        maskEl.classList.add('hide');
+        setTimeout(() => maskEl.remove(), 300);
 
-      // 绑定底部操作栏
-      fOpenLink.href = `${BASE}/t/${topicData.id}`;
-      bindBookmark(fBookmarkBtn, topicData);
-      bindFooterLike(fLikeBtn, fLikeCountEl, opPost);
+        // 绑定底部操作栏
+        fOpenLink.href = `${BASE}/t/${topicId}`;
+        bindBookmark(fBookmarkBtn, topicData);
+        bindFooterLike(fLikeBtn, fLikeCountEl, opPost);
 
-      const canBoostOp = !!(opPost && opPost.can_boost);
-      if (!canBoostOp) { fBoostBtn.disabled = true; fBoostBtn.style.opacity = '0.4'; }
-      fBoostBtn.addEventListener('click', () => {
-        if (fBoostBtn.disabled) return;
-        const opNode = ctx.topicEl.querySelector('.ldp-post');
-        if (!opNode) return;
-        const wrap = opNode.querySelector(':scope > .ldp-boost-input-wrap');
-        if (!wrap) return;
-        const opening = !wrap.classList.contains('open');
-        wrap.classList.toggle('open', opening);
-        if (opening) { wrap.querySelector('.ldp-boost-input').focus(); wrap.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-      });
+        const canBoostOp = !!(opPost && opPost.can_boost);
+        if (!canBoostOp) { fBoostBtn.disabled = true; fBoostBtn.style.opacity = '0.4'; }
+        fBoostBtn.addEventListener('click', () => {
+          if (fBoostBtn.disabled) return;
+          const opNode = ctx.topicEl.querySelector('.ldp-post');
+          if (!opNode) return;
+          const wrap = opNode.querySelector(':scope > .ldp-boost-input-wrap');
+          if (!wrap) return;
+          const opening = !wrap.classList.contains('open');
+          wrap.classList.toggle('open', opening);
+          if (opening) { wrap.querySelector('.ldp-boost-input').focus(); wrap.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        });
 
-      fReplyBtn.addEventListener('click', () => {
-        const opNode = ctx.topicEl.querySelector('.ldp-post');
-        if (!opNode) return;
-        const box = ensureReplyBox(opNode);
-        box.classList.toggle('open');
-        if (box.classList.contains('open')) { box.querySelector('textarea').focus(); box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-      });
-      footerEl.hidden = false;
+        fReplyBtn.addEventListener('click', () => {
+          const opNode = ctx.topicEl.querySelector('.ldp-post');
+          if (!opNode) return;
+          const box = ensureReplyBox(opNode);
+          box.classList.toggle('open');
+          if (box.classList.contains('open')) { box.querySelector('textarea').focus(); box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        });
+        footerEl.hidden = false;
 
-      bindActions(modal, ctx);
-      tracker.start();
+        bindActions(modal, ctx);
+        tracker.start();
 
-      // ====== 阶段 2：后台加载评论 ======
-      // 解析 stream 数组并初始化 loader 的内部状态
-      const streamFull = topicData.post_stream.stream || [];
-      const stream = streamFull.filter(id => {
-        const cached = topicData.post_stream.posts.find(p => p.id === id);
-        return !(cached && cached.post_number === 1);
-      });
-
-      // 初始化 loader 的 cache 和 stream（关键！）
-      topicData.post_stream.posts.forEach(p => loader.cache.set(p.id, p));
-      loader.stream = stream;  // 设置内部 stream 数组
-
-      // 计算实际目标楼层
-      let resolvedTarget = null;
-      if (targetPostNumber === 0) {
-        const lastRead = topicData.last_read_post_number || 0;
-        const highest = topicData.highest_post_number || 1;
-        if (lastRead > 0 && lastRead < highest) {
-          resolvedTarget = lastRead + 1;
-        }
-      } else if (targetPostNumber > 0) {
-        resolvedTarget = targetPostNumber;
-      }
-
-      // 计算初始窗口
-      let windowIds = [];
-      let exactTargetId = null;
-
-      if (!resolvedTarget || resolvedTarget <= 1) {
-        // 从头加载
-        const windowEnd = Math.min(PAGE_SIZE, stream.length);
-        windowIds = stream.slice(0, windowEnd);
-        loader.upCursor = 0;
-        loader.downCursor = windowEnd;
-        loader.topReached = true;
-        loader.bottomReached = windowEnd >= stream.length;
-      } else {
-        // 跳转到指定楼层
-        let safeIdx = Math.max(0, Math.min(resolvedTarget - 2, stream.length - 1));
-
-        // 尝试精确定位
+        // ====== 阶段 2：渲染嵌套树 ======
+        loadingTip.classList.add('show');
         try {
-          const anchor = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`);
-          const anchorPosts = (anchor.post_stream && anchor.post_stream.posts) || [];
-          anchorPosts.forEach(p => loader.cache.set(p.id, p));
-          const exactPost = anchorPosts.find(p => p.post_number === resolvedTarget);
-          if (exactPost) {
-            const idx = stream.indexOf(exactPost.id);
-            if (idx >= 0) safeIdx = idx;
+          renderNestedTree(roots, commentsEl, ctx, 1);
+          loadingTip.classList.remove('show');
+
+          // 如果有更多顶层回复，添加滚动监听器
+          if (nestedHasMoreRoots) {
+            let isLoadingMore = false;  // 加载锁
+
+            // IntersectionObserver 监听底部哨兵
+            const sentinelDownIO = new IntersectionObserver(
+                (entries) => {
+                  if (entries.some((en) => en.isIntersecting) && !isLoadingMore) {
+                    loadMoreRoots();
+                  }
+                },
+                { root: body, rootMargin: '300px' }
+            );
+            sentinelDownIO.observe(downSentinel);
+
+            // scroll 事件兜底
+            body.addEventListener('scroll', () => {
+              if (isLoadingMore) return;
+              const { scrollTop, scrollHeight, clientHeight } = body;
+              if (scrollHeight - scrollTop - clientHeight < 400) {
+                loadMoreRoots();
+              }
+            }, { passive: true });
+
+            // 加载更多顶层回复
+            async function loadMoreRoots() {
+              if (!nestedHasMoreRoots || isLoadingMore) return;
+
+              isLoadingMore = true;
+              loadDownTip.classList.add('show');
+              try {
+                const nextPage = nestedRootsPage + 1;
+                const response = await fetchNestedTree(topicId, nextPage);
+
+                if (response.roots && response.roots.length > 0) {
+                  // 去重：过滤已存在的帖子
+                  const existingIds = new Set(nestedTreeRoots.map(r => r.id));
+                  const newRoots = response.roots.filter(r => !existingIds.has(r.id));
+
+                  if (newRoots.length > 0) {
+                    // 追加新数据到索引
+                    indexTree(newRoots);
+
+                    // 追加到内存树
+                    nestedTreeRoots = nestedTreeRoots.concat(newRoots);
+
+                    // 渲染新数据
+                    renderNestedTree(newRoots, commentsEl, ctx, 1);
+                  }
+
+                  // 更新状态
+                  nestedHasMoreRoots = response.has_more_roots || false;
+                  nestedRootsPage = response.page || nextPage;
+
+                  if (!nestedHasMoreRoots) {
+                    showBottomTip();
+                  }
+                } else {
+                  // 没有新数据，停止加载
+                  nestedHasMoreRoots = false;
+                  showBottomTip();
+                }
+              } catch (e) {
+                console.error('加载更多评论失败:', e);
+              } finally {
+                isLoadingMore = false;
+                loadDownTip.classList.remove('show');
+              }
+            }
+          } else {
+            showBottomTip();
           }
-        } catch (e) {}
-
-        const halfWindow = SLICE_RADIUS;
-        const wStart = Math.max(0, safeIdx - halfWindow);
-        const wEnd = Math.min(stream.length, safeIdx + halfWindow);
-        windowIds = stream.slice(wStart, wEnd);
-        loader.upCursor = wStart;
-        loader.downCursor = wEnd;
-        loader.topReached = wStart === 0;
-        loader.bottomReached = wEnd >= stream.length;
-
-        // 查找目标楼层 ID
-        for (const id of windowIds) {
-          const p = loader.cache.get(id);
-          if (p && p.post_number === resolvedTarget) { exactTargetId = id; break; }
-        }
-      }
-
-      // 请求评论
-      if (windowIds.length > 0) {
-        try {
-          await loader.fetchSlice(windowIds);
-          const posts = windowIds.map(id => loader.cache.get(id)).filter(Boolean);
-          posts.forEach(p => attachPost(p, ctx));
-          reflowPending(ctx);
         } catch (err) {
-          // 评论加载失败，降级显示（1楼已正常显示）
-          console.error('评论加载失败:', err);
+          loadingTip.classList.remove('show');
+          alert('渲染评论失败：' + err.message);
         }
-      }
 
-      // 初始化双向游标状态
-      upDone = loader.topReached;
-      downDone = loader.bottomReached;
-      // 初始窗口已覆盖到最后一楼（如短贴一次性加载完，或跳转楼层靠近末尾），
-      // 此时不会再触发 pumpDown()，需要在这里主动补上底部提示
-      if (downDone) showBottomTip();
-
-      // 挂载哨兵监听器（总是挂载）
-      isAnchoring = true;
-      sentinelDownIO.observe(downSentinel);
-      if (!upDone) sentinelUpIO.observe(upSentinel);
-
-      // 定位 & 高亮
-      if (resolvedTarget && exactTargetId) {
-        await locatePost(resolvedTarget, ctx);
+      } else if (nestedResponse.flat_topic) {
+        // 服务器返回扁平流（私有话题等）
+        alert('此话题不支持树形视图，请刷新页面使用标准视图');
+        return;
       } else {
-        body.scrollTop = 0;
+        throw new Error('服务器返回数据格式异常');
       }
-      isAnchoring = false;
 
-      // 等待 ME 加载完成，更新标签
+      // 等待 ME 加载完成
       await mePromise;
 
     } catch (err) {
@@ -1804,7 +1698,7 @@
         // 用户关闭弹框，静默退出
         return;
       }
-      // 阶段 1 失败，显示错误
+      // 加载失败，显示错误
       if (maskEl) maskEl.remove();
       body.innerHTML = `<div class="ldp-error">加载失败：${esc(err.message)}</div>`;
     }
