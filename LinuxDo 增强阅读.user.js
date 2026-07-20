@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.3.0
+// @version      1.3.1
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -318,9 +318,40 @@
    * @param {number} postNumber - 帖子楼号
    * @returns {Promise<{children: Array, has_more: boolean, page: number}>}
    */
-  async function fetchNestedChildren(topicId, postNumber) {
-    const url = `${BASE}/n/-/${topicId}/children/${postNumber}.json?sort=old&page=0&depth=1`;
+  async function fetchNestedChildren(topicId, postNumber, page = 0) {
+    const url = `${BASE}/n/-/${topicId}/children/${postNumber}.json?sort=old&page=${page}&depth=1`;
     return await fetchJSON(url);
+  }
+
+  /**
+   * fetchAllNestedChildren：读取指定父楼层的全部直接回复分页。
+   * children API 会同时携带每条直接回复当前可用的下级 children，后续定位时
+   * 再沿目标祖先链逐层补全，因此无需一次请求无限深度的整棵树。
+   */
+  async function fetchAllNestedChildren(topicId, postNumber) {
+    const children = [];
+    const seenIds = new Set();
+    let page = 0;
+
+    for (let guard = 0; guard < 100; guard++) {
+      const response = await fetchNestedChildren(topicId, postNumber, page);
+      const batch = Array.isArray(response.children) ? response.children : [];
+      let added = 0;
+      batch.forEach((post) => {
+        if (seenIds.has(post.id)) return;
+        seenIds.add(post.id);
+        children.push(post);
+        added++;
+      });
+
+      if (!response.has_more) return children;
+      if (added === 0) throw new Error(`楼层 #${postNumber} 的子回复分页没有继续推进`);
+
+      const responsePage = Number(response.page);
+      page = Number.isFinite(responsePage) ? responsePage + 1 : page + 1;
+    }
+
+    throw new Error(`楼层 #${postNumber} 的子回复分页超过安全上限`);
   }
 
   /**
@@ -333,6 +364,16 @@
       idToPost.set(post.id, post);
       if (post.children && post.children.length > 0) {
         indexTree(post.children);
+      }
+    });
+  }
+
+  function indexPostsByNumber(posts, ctx) {
+    if (!posts || !posts.length || !ctx.postMap) return;
+    posts.forEach((post) => {
+      ctx.postMap.set(post.post_number, post);
+      if (post.children && post.children.length > 0) {
+        indexPostsByNumber(post.children, ctx);
       }
     });
   }
@@ -497,6 +538,7 @@
     if (!posts || !posts.length) return;
 
     posts.forEach(post => {
+      if (ctx.postMap) ctx.postMap.set(post.post_number, post);
       const node = renderPost(post, depth > 0, ctx, depth);
       container.appendChild(node);
       ctx.tracker.observe(node);
@@ -536,6 +578,7 @@
 
   /* ============ 7. 楼层归位（已废弃，保留用于扁平流降级） ============ */
   function attachPost(p, ctx) {
+    if (ctx.postMap) ctx.postMap.set(p.post_number, p);
     if (p.post_number === 1) {
       // 1 楼永久常驻：已存在则跳过（防止重复渲染）
       if (ctx.topicEl.querySelector('.ldp-post')) return;
@@ -731,30 +774,64 @@
    * @param {HTMLElement} button - "展示更多"按钮
    * @param {object} ctx - 全局上下文
    */
-  async function loadAllChildren(postId, postNumber, button, ctx) {
-    button.disabled = true;
-    button.textContent = '加载中...';
+  async function loadAllChildren(postId, postNumber, button, ctx, silent = false) {
+    if (button) {
+      button.disabled = true;
+      button.textContent = '加载中...';
+    }
+
     try {
-      const response = await fetchNestedChildren(ctx.topicId, postNumber);
-      const post = idToPost.get(postId);
-      if (!post) throw new Error('帖子数据未找到');
+      const children = await fetchAllNestedChildren(ctx.topicId, postNumber);
+      const postNode = ctx.nodeMap.get(postNumber)
+          || button?.closest('.ldp-post');
+      if (!postNode) throw new Error(`父楼层 #${postNumber} 尚未渲染`);
 
-      // 更新内存中的 children 数组
-      post.children = response.children;
-      indexTree(response.children);
+      const post = ctx.postMap?.get(postNumber) || idToPost.get(postId);
+      if (post) post.children = children;
+      indexTree(children);
+      indexPostsByNumber(children, ctx);
 
-      // 重新渲染子回复
-      const postNode = button.closest('.ldp-post');
-      const childrenEl = postNode.querySelector('.ldp-children');
+      // 清理扁平窗口中可能临时挂在顶层的重复节点；随后用权威嵌套数据重建子树。
+      const childNumbers = new Set();
+      const collectNumbers = (items) => items.forEach((item) => {
+        childNumbers.add(item.post_number);
+        if (item.children?.length) collectNumbers(item.children);
+      });
+      collectNumbers(children);
+      childNumbers.forEach((postNum) => {
+        const oldNode = ctx.nodeMap.get(postNum);
+        if (oldNode) oldNode.remove();
+        ctx.nodeMap.delete(postNum);
+      });
+      if (ctx.pending) {
+        ctx.pending = ctx.pending.filter((item) => !childNumbers.has(item.num));
+      }
+
+      const childrenEl = postNode.querySelector(':scope > .ldp-children');
       childrenEl.innerHTML = '';
-      renderNestedTree(response.children, childrenEl, ctx, 1);
 
-      // 移除按钮
-      button.remove();
+      let parentDepth = 0;
+      let cursor = postNode.parentElement;
+      while (cursor && cursor !== ctx.commentsEl) {
+        if (cursor.classList.contains('ldp-children')) parentDepth++;
+        cursor = cursor.parentElement;
+      }
+      renderNestedTree(children, childrenEl, ctx, parentDepth + 1);
+
+      const actionsEl = postNode.querySelector(':scope > .ldp-sub-actions');
+      if (actionsEl) actionsEl.style.display = 'none';
+      if (button) button.remove();
+      return children;
     } catch (e) {
-      alert('加载失败：' + e.message);
-      button.disabled = false;
-      button.textContent = '展示更多回复 ↓';
+      if (button) {
+        button.disabled = false;
+        button.textContent = '展示更多回复 ↓';
+      }
+      if (!silent) {
+        alert('加载失败：' + e.message);
+        return [];
+      }
+      throw e;
     }
   }
 
@@ -1015,6 +1092,145 @@
     if (ctx.footerReplyCountEl) ctx.footerReplyCountEl.textContent = ctx.totalComments || 0;
   }
 
+  /* ============ 13. 定位：递归展开楼中楼并高亮目标 ============ */
+  function waitForScrollEnd(el, timeoutMs = 1200) {
+    const IDLE_MS = 120;
+    return new Promise((resolve) => {
+      let done = false;
+      let idleTimer = null;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        el.removeEventListener('scroll', onScroll);
+        clearTimeout(idleTimer);
+        clearTimeout(safety);
+        resolve();
+      };
+      const onScroll = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(finish, IDLE_MS);
+      };
+      el.addEventListener('scroll', onScroll, { passive: true });
+      idleTimer = setTimeout(finish, IDLE_MS);
+      const safety = setTimeout(finish, timeoutMs);
+    });
+  }
+
+  async function fetchPostForLocate(topicId, postNumber, ctx) {
+    const cached = ctx.postMap?.get(postNumber);
+    if (cached) return cached;
+
+    const data = await fetchJSON(`${BASE}/t/${topicId}.json?post_number=${postNumber}`);
+    const posts = data.post_stream?.posts || [];
+    posts.forEach((post) => {
+      if (ctx.postMap) ctx.postMap.set(post.post_number, post);
+      idToPost.set(post.id, post);
+    });
+    return posts.find((post) => post.post_number === postNumber) || null;
+  }
+
+  function ensurePostPlacement(post, ctx) {
+    if (!post || post.post_number === 1) return ctx.nodeMap.get(1) || null;
+
+    if (ctx.postMap) ctx.postMap.set(post.post_number, post);
+    idToPost.set(post.id, post);
+
+    let node = ctx.nodeMap.get(post.post_number);
+    if (!node) {
+      attachPost(post, ctx);
+      reflowPending(ctx);
+      node = ctx.nodeMap.get(post.post_number);
+    }
+    if (!node) return null;
+
+    const parentNumber = +post.reply_to_post_number || 1;
+    if (parentNumber > 1) {
+      const parentNode = ctx.nodeMap.get(parentNumber);
+      const childrenEl = parentNode?.querySelector(':scope > .ldp-children');
+      if (childrenEl && node.parentElement !== childrenEl) childrenEl.appendChild(node);
+    } else if (node.parentElement !== ctx.commentsEl) {
+      ctx.commentsEl.appendChild(node);
+    }
+    return node;
+  }
+
+  async function expandTargetAncestorChain(targetPostNumber, ctx) {
+    const targetPost = await fetchPostForLocate(ctx.topicId, targetPostNumber, ctx);
+    if (!targetPost) throw new Error(`未找到目标楼层 #${targetPostNumber}`);
+
+    const chain = [targetPost];
+    const seen = new Set([targetPostNumber]);
+    let current = targetPost;
+
+    while (+current.reply_to_post_number > 1) {
+      const parentNumber = +current.reply_to_post_number;
+      if (seen.has(parentNumber)) throw new Error('楼中楼祖先链存在循环引用');
+      seen.add(parentNumber);
+
+      const parent = await fetchPostForLocate(ctx.topicId, parentNumber, ctx);
+      if (!parent) throw new Error(`未找到父楼层 #${parentNumber}`);
+      chain.unshift(parent);
+      current = parent;
+    }
+
+    // 从最外层父回复向目标逐层展开，确保多层楼中楼的每一级 DOM 都已就位。
+    for (let i = 0; i < chain.length; i++) {
+      const post = ctx.postMap?.get(chain[i].post_number) || chain[i];
+      ensurePostPlacement(post, ctx);
+
+      const childOnPath = chain[i + 1];
+      if (!childOnPath) continue;
+
+      await loadAllChildren(post.id, post.post_number, null, ctx, true);
+      const refreshedChild = ctx.postMap?.get(childOnPath.post_number) || childOnPath;
+      ensurePostPlacement(refreshedChild, ctx);
+      reflowPending(ctx);
+    }
+
+    return ctx.nodeMap.get(targetPostNumber) || null;
+  }
+
+  async function locatePost(targetPostNumber, ctx) {
+    if (!targetPostNumber || targetPostNumber <= 1) return false;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    let targetNode = ctx.nodeMap.get(targetPostNumber);
+    try {
+      targetNode = await expandTargetAncestorChain(targetPostNumber, ctx) || targetNode;
+    } catch (error) {
+      // 嵌套接口不可用时保留 1.3.0 原有的扁平定位作为降级路径。
+      console.warn(`[LinuxDo 增强阅读] 展开目标楼层 #${targetPostNumber} 的祖先链失败，改用扁平定位`, error);
+      targetNode = ctx.nodeMap.get(targetPostNumber)
+          || (targetNode?.isConnected ? targetNode : null);
+    }
+
+    if (!targetNode || targetNode.isConnected === false) {
+      console.warn(`[LinuxDo 增强阅读] 目标楼层 #${targetPostNumber} 尚未渲染，无法定位`);
+      return false;
+    }
+
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await waitForScrollEnd(ctx.scrollRoot);
+
+    const flashObserver = new IntersectionObserver((entries, observer) => {
+      const visibleEntry = entries.find((entry) =>
+          entry.isIntersecting && entry.intersectionRatio >= 0.5
+      );
+      if (!visibleEntry) return;
+
+      observer.disconnect();
+      const node = visibleEntry.target;
+      node.classList.remove('ldp-flash');
+      void node.offsetWidth;
+      node.classList.add('ldp-flash');
+      setTimeout(() => node.classList.remove('ldp-flash'), 1700);
+    }, { root: ctx.scrollRoot, threshold: [0.5] });
+    flashObserver.observe(targetNode);
+    setTimeout(() => flashObserver.disconnect(), 1500);
+    return true;
+  }
+
   const SKELETON_HTML = `
     <div class="ldp-sk-head">
       <div class="ldp-sk ldp-sk-avatar"></div>
@@ -1128,6 +1344,7 @@
       topicId, op: null, topicEl, commentsEl, countEl, emptyEl,
       scrollRoot: body,
       nodeMap: new Map(),
+      postMap: new Map(),
       tracker,
       totalComments: 0,
       footerReplyCountEl: fReplyCountEl,
@@ -1201,7 +1418,7 @@
       if (resolvedTarget && resolvedTarget > 1) {
         // 使用扁平流 API 精确定位
         try {
-          const anchorUrl = `${BASE}/t/${topicId}.json?post_number=${resolvedTarget}&track_visit=true&forceLoad=true`;
+          const anchorUrl = `${BASE}/t/${topicId}.json?post_number=${resolvedTarget}`;
           const anchorRes = await fetch(anchorUrl, {
             method: 'GET',
             credentials: 'include',
@@ -1214,9 +1431,14 @@
           if (!anchorRes.ok) throw new Error('HTTP ' + anchorRes.status);
           const anchorData = await anchorRes.json();
 
+          idToPost.clear();
+          anchorData.post_stream.posts.forEach((post) => {
+            idToPost.set(post.id, post);
+            ctx.postMap.set(post.post_number, post);
+          });
+
           // 提取基本信息
           let opPost = anchorData.post_stream.posts.find(p => p.post_number === 1);
-          const targetPost = anchorData.post_stream.posts.find(p => p.post_number === resolvedTarget);
           const opNotInWindow = !opPost;  // 标记楼主是否不在当前窗口
 
           // 如果窗口中不包含楼主，从话题详情中获取（优先复用前面已拉取的缓存，避免重复请求）
@@ -1272,6 +1494,8 @@
           const opNode = renderPost(opPost, false, ctx, 0);
           ctx.topicEl.appendChild(opNode);
           ctx.nodeMap.set(1, opNode);
+          ctx.postMap.set(1, opPost);
+          idToPost.set(opPost.id, opPost);
           ctx.tracker.observe(opNode);
 
           // 立即移除骨架屏
@@ -1354,15 +1578,8 @@
           reflowPending(ctx);
           loadingTip.classList.remove('show');
 
-          // 定位到目标楼层
-          if (targetPost) {
-            const targetNode = ctx.nodeMap.get(resolvedTarget);
-            if (targetNode) {
-              targetNode.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              targetNode.classList.add('ldp-flash');
-              setTimeout(() => targetNode.classList.remove('ldp-flash'), 1700);
-            }
-          }
+          // 展开完整祖先链，等待滚动稳定后再高亮目标；失败时函数内部降级为扁平定位。
+          await locatePost(resolvedTarget, ctx);
 
           // ====== 添加双向加载逻辑 ======
           async function fetchPosts(postIds) {
@@ -1498,10 +1715,8 @@
             if (scrollTop < 800) loadUp();
           }, { passive: true });
 
-          // 延迟解锁锚定（等待滚动动画完成）
-          setTimeout(() => {
-            isAnchoring = false;
-          }, 1200);
+          // locatePost 已等待滚动真正停止，可以安全开放双向加载。
+          isAnchoring = false;
 
           showBottomTip();
 
@@ -1534,6 +1749,9 @@
         idToPost.clear();
         idToPost.set(opPost.id, opPost);
         indexTree(roots);
+        ctx.postMap.clear();
+        ctx.postMap.set(1, opPost);
+        indexPostsByNumber(roots, ctx);
 
         // 构造 topicData 对象（兼容后续逻辑）
         topicData = {
