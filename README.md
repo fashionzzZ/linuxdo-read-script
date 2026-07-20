@@ -3,7 +3,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、原图灯箱一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.3.2-blue)
+![version](https://img.shields.io/badge/version-1.3.3-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -23,6 +23,7 @@
 - **Boost**：对楼层发送简短文字 Boost（最多 16 字符），支持撤回自己发送的 Boost。
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
 - **原图灯箱**：点击正文图片以原图地址（外层 `a.lightbox` 的 `href`）打开灯箱；点图片、点空白、按 Esc、点右上角 × 均可关闭。
+- **视频播放**：支持 Discourse 视频占位符，点击封面后在弹窗内生成原生播放器。
 - **OP / ME 标识**：楼主所有楼层标注蓝色 `OP`，本人楼层标注绿色 `ME`。
 - **打开原帖**：头部一键在新标签页打开帖子原始页面。
 - **已读上报**：仅对**滚动进入视口并停留足够时间**的楼层，按真实阅读节奏调用 `topics/timings` 上报，使弹窗阅读也能计入 Connect 进度。

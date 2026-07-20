@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.3.2
+// @version      1.3.3
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -127,6 +127,25 @@
     .ldp-floor{font-size:12px;opacity:.5;margin-left:auto;
       padding-left:8px;white-space:nowrap;}
     .ldp-content img{max-width:100%;height:auto;cursor:zoom-in;border-radius:4px;}
+    .ldp-content .video-placeholder-container{max-width:100%;overflow:hidden;border-radius:6px;}
+    .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready){
+      position:relative;background:#000;cursor:pointer;}
+    .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready)::before{
+      content:"";position:absolute;z-index:3;left:50%;top:50%;width:62px;height:62px;
+      transform:translate(-50%,-50%);border:2px solid rgba(255,255,255,.92);
+      border-radius:50%;background:rgba(0,0,0,.58);pointer-events:none;
+      box-shadow:0 4px 18px rgba(0,0,0,.35);transition:background .18s,transform .18s;}
+    .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready)::after{
+      content:"";position:absolute;z-index:4;left:50%;top:50%;
+      transform:translate(-35%,-50%);border-top:11px solid transparent;
+      border-bottom:11px solid transparent;border-left:18px solid #fff;
+      pointer-events:none;filter:drop-shadow(0 1px 2px rgba(0,0,0,.45));}
+    .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready):hover::before{
+      background:rgba(8,132,255,.82);transform:translate(-50%,-50%) scale(1.06);}
+    .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready)
+      .video-placeholder-overlay{display:none;}
+    .ldp-content .video-placeholder-container.ldp-video-ready{cursor:default!important;background:#000;}
+    .ldp-content video{display:block;width:100%;max-width:100%;max-height:70vh;background:#000;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
     .ldp-children{margin-left:22px;
@@ -447,6 +466,33 @@
       }
     }
     return imgEl.getAttribute('data-large-src') || imgEl.currentSrc || imgEl.src;
+  }
+
+  function activateVideoPlaceholder(container) {
+    if (!container) return null;
+    const existingVideo = container.querySelector('video');
+    if (existingVideo) return existingVideo;
+
+    const src = container.dataset.videoSrc;
+    if (!src) return null;
+
+    const video = document.createElement('video');
+    video.src = src;
+    video.controls = true;
+    video.preload = 'metadata';
+    video.playsInline = true;
+    video.style.display = 'block';
+    video.style.width = '100%';
+    video.style.maxHeight = '70vh';
+    video.style.background = '#000';
+
+    container.classList.add('video-container', 'ldp-video-ready');
+    container.style.cursor = '';
+    container.replaceChildren(video);
+
+    const playPromise = video.play();
+    if (playPromise?.catch) playPromise.catch(() => {});
+    return video;
   }
 
   /* ============ 4. 已读追踪器 ============ */
@@ -859,6 +905,14 @@
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
+      const videoPlaceholder = e.target.closest('.video-placeholder-container[data-video-src]');
+      if (videoPlaceholder && !videoPlaceholder.querySelector('video')) {
+        e.preventDefault();
+        e.stopPropagation();
+        activateVideoPlaceholder(videoPlaceholder);
+        return;
+      }
+
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') return;
 
