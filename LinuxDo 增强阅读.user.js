@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.3.1
+// @version      1.3.2
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -1116,6 +1116,22 @@
     });
   }
 
+  function resolveTargetPostNumber(targetPostNumber, posts) {
+    const target = Number(targetPostNumber);
+    if (!Number.isFinite(target) || target <= 1) return targetPostNumber;
+
+    const availableNumbers = (posts || [])
+        .map((post) => Number(post?.post_number))
+        .filter((postNumber) => Number.isFinite(postNumber) && postNumber >= 1)
+        .sort((a, b) => a - b);
+    if (!availableNumbers.length || availableNumbers.includes(target)) return target;
+
+    // Discourse 删除或隐藏回复后楼号可能不连续。优先定位到下一个
+    // 实际可见的楼层；如果已经到末尾，则回退到最近的前一楼。
+    return availableNumbers.find((postNumber) => postNumber > target)
+        ?? availableNumbers[availableNumbers.length - 1];
+  }
+
   async function fetchPostForLocate(topicId, postNumber, ctx) {
     const cached = ctx.postMap?.get(postNumber);
     if (cached) return cached;
@@ -1195,17 +1211,19 @@
     await new Promise((resolve) => requestAnimationFrame(resolve));
 
     let targetNode = ctx.nodeMap.get(targetPostNumber);
+    let locateError = null;
     try {
       targetNode = await expandTargetAncestorChain(targetPostNumber, ctx) || targetNode;
     } catch (error) {
       // 嵌套接口不可用时保留 1.3.0 原有的扁平定位作为降级路径。
-      console.warn(`[LinuxDo 增强阅读] 展开目标楼层 #${targetPostNumber} 的祖先链失败，改用扁平定位`, error);
+      locateError = error;
       targetNode = ctx.nodeMap.get(targetPostNumber)
           || (targetNode?.isConnected ? targetNode : null);
     }
 
     if (!targetNode || targetNode.isConnected === false) {
-      console.warn(`[LinuxDo 增强阅读] 目标楼层 #${targetPostNumber} 尚未渲染，无法定位`);
+      const reason = locateError?.message ? `：${locateError.message}` : '';
+      console.warn(`[LinuxDo 增强阅读] 目标楼层 #${targetPostNumber} 不可见，无法定位${reason}`);
       return false;
     }
 
@@ -1430,6 +1448,18 @@
           });
           if (!anchorRes.ok) throw new Error('HTTP ' + anchorRes.status);
           const anchorData = await anchorRes.json();
+
+          const requestedTarget = resolvedTarget;
+          resolvedTarget = resolveTargetPostNumber(
+              resolvedTarget,
+              anchorData.post_stream?.posts || []
+          );
+          if (resolvedTarget !== requestedTarget) {
+            console.debug(
+                `[LinuxDo 增强阅读] 目标楼层 #${requestedTarget} 不可见，`
+                + `改为定位 #${resolvedTarget}`
+            );
+          }
 
           idToPost.clear();
           anchorData.post_stream.posts.forEach((post) => {
