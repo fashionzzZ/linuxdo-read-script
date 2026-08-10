@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.3.3
+// @version      1.3.4
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -746,7 +746,100 @@
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
+    renderMath(node);
     return node;
+  }
+
+  /* ============ 7.1 公式渲染（KaTeX） ============ */
+  /**
+   * Discourse 的 cooked 中公式只是 <span class="math"> / <div class="math">
+   * 包裹的原始 LaTeX，真正的渲染由站点 discourse-math 插件在客户端完成；
+   * 本脚本自建 DOM 绕过了该流程，因此需自行调用 KaTeX。
+   * 优先复用站点已加载的 KaTeX（window.katex），否则加载站点自带资源，
+   * 最后回退到 jsdelivr CDN（站点可能使用 MathJax 等其它渲染器）。
+   */
+  const KATEX_CDN_CSS = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
+  const KATEX_CDN_JS = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js';
+  const KATEX_CDN_MHCHEM = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/mhchem.min.js';
+  let katexLoading = null;
+
+  function loadAsset(kind, url) {
+    return new Promise((resolve, reject) => {
+      if (kind === 'css') {
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = url;
+        link.onload = () => resolve();
+        link.onerror = () => reject(new Error('CSS 加载失败: ' + url));
+        document.head.appendChild(link);
+      } else {
+        const script = document.createElement('script');
+        script.src = url;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error('JS 加载失败: ' + url));
+        document.head.appendChild(script);
+      }
+    });
+  }
+
+  function loadKatex() {
+    if (window.katex) return Promise.resolve();
+    if (katexLoading) return katexLoading;
+    katexLoading = (async () => {
+      let loaded = false;
+      try {
+        // 1) 站点自带 KaTeX 资源（与 discourse-math 插件一致，同源最快）
+        await loadAsset('css', `${BASE}/plugins/discourse-math/katex/katex.min.css`);
+        await loadAsset('js', `${BASE}/plugins/discourse-math/katex/katex.min.js`);
+        await loadAsset('js', `${BASE}/plugins/discourse-math/katex/mhchem.min.js`);
+        loaded = !!window.katex;
+      } catch (err) {
+        loaded = false;
+      }
+      if (!loaded) {
+        // 2) 站点未提供 KaTeX 时回退到公共 CDN
+        await loadAsset('css', KATEX_CDN_CSS);
+        await loadAsset('js', KATEX_CDN_JS);
+        await loadAsset('js', KATEX_CDN_MHCHEM);
+      }
+      if (!window.katex) throw new Error('KaTeX 加载失败');
+    })();
+    katexLoading.catch(() => { katexLoading = null; });
+    return katexLoading;
+  }
+
+  function renderMath(root) {
+    const mathEls = root.querySelectorAll('.math');
+    if (!mathEls.length) return;
+
+    loadKatex().then(() => {
+      mathEls.forEach((el) => {
+        if (el.dataset.appliedKatex) return;
+        el.dataset.appliedKatex = true;
+
+        // 类名与选项对齐 discourse-math 插件，保证站点 KaTeX CSS 生效
+        const isBlock = el.tagName === 'DIV';
+        el.classList.add('math-container', isBlock ? 'block-math' : 'inline-math', 'katex-math');
+        const text = el.textContent;
+        el.textContent = '';
+        try {
+          window.katex.render(text, el, {
+            trust: (context) => ['\\htmlId', '\\href'].includes(context.command),
+            macros: {
+              '\\eqref': '\\href{###1}{(\\text{#1})}',
+              '\\ref': '\\href{###1}{\\text{#1}}',
+              '\\label': '\\htmlId{#1}{}',
+            },
+            displayMode: isBlock,
+            throwOnError: false,
+          });
+        } catch (err) {
+          el.textContent = text; // 渲染失败时保留原始公式文本
+        }
+      });
+    }).catch((err) => {
+      console.warn('[LinuxDo 增强阅读] KaTeX 加载失败，公式将以文本显示:', err);
+    });
   }
 
   /* ============ 8. 回复框 ============ */
