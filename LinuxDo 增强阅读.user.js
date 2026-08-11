@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.3.4
+// @version      1.4.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -34,7 +34,7 @@
   style.textContent = `
     .ldp-overlay{position:fixed;inset:0;z-index:2147483000;display:flex;
       align-items:center;justify-content:center;background:rgba(0,0,0,.55);}
-    .ldp-modal{display:flex;flex-direction:column;
+    .ldp-modal{position:relative;display:flex;flex-direction:column;
       width:90%;max-width:1000px;height:90vh;
       border-radius:12px;overflow:hidden;font-size:16px;
       line-height:1.65;background:var(--secondary,#fff);color:var(--primary,#222);
@@ -48,6 +48,29 @@
       line-height:1;color:inherit;padding:0 4px;}
     .ldp-body{flex:1;min-height:0;position:relative;
       padding:8px 20px 20px;overflow-y:auto;overscroll-behavior:contain;}
+
+    /* 楼层滑动跳转条（仿 L 站原生） */
+    .ldp-slider{position:absolute;top:0;right:0;bottom:0;width:22px;z-index:8;
+      display:flex;flex-direction:column;align-items:center;}
+    .ldp-slider[hidden]{display:none;}
+    .ldp-slider-track{position:absolute;top:8px;bottom:8px;left:50%;
+      width:4px;transform:translateX(-50%);border-radius:2px;
+      background:var(--primary-low,#ddd);}
+    .ldp-slider-thumb{position:absolute;left:50%;width:auto;min-width:18px;
+      height:18px;padding:0 5px;border-radius:9px;background:var(--tertiary,#08c);
+      transform:translate(-50%,-50%);cursor:grab;pointer-events:auto;
+      box-shadow:0 1px 4px rgba(0,0,0,.3);transition:transform .1s;
+      border:2px solid var(--secondary,#fff);color:#fff;font-size:10px;font-weight:700;
+      line-height:18px;text-align:center;white-space:nowrap;user-select:none;}
+    .ldp-slider-thumb:active{cursor:grabbing;transform:translate(-50%,-50%) scale(1.1);}
+    .ldp-slider-tip{position:absolute;right:28px;background:var(--primary,#222);
+      color:var(--secondary,#fff);font-size:12px;font-weight:600;padding:3px 8px;
+      border-radius:4px;white-space:nowrap;transform:translateY(-50%);opacity:0;
+      transition:opacity .15s;pointer-events:none;}
+    .ldp-slider-tip.show{opacity:1;}
+    .ldp-slider-tip::after{content:"";position:absolute;right:-5px;top:50%;
+      transform:translateY(-50%);border:4px solid transparent;
+      border-left-color:var(--primary,#222);}
 
     /* 底部悬浮操作栏 */
     .ldp-footer{flex:none;display:flex;align-items:center;justify-content:space-around;
@@ -1396,6 +1419,170 @@
     return true;
   }
 
+  function createFloorNavigator(nav, scrollRoot, topicId) {
+    const thumb = nav.querySelector('.ldp-slider-thumb');
+    const tip = nav.querySelector('.ldp-slider-tip');
+    const track = nav.querySelector('.ldp-slider-track');
+    const modal = nav.parentElement;
+    let currentFloor = 1;
+    let totalFloors = 1;
+    let dragging = false;
+    let scrollRaf = 0;
+    let suppressClick = false;
+    let resizeHandler = null;
+    let mutationObserver = null;
+    let mutationTimer = null;
+    let geometryTimer = null;
+
+    const updateGeometry = () => {
+      const bodyRect = scrollRoot.getBoundingClientRect();
+      const modalRect = modal.getBoundingClientRect();
+      nav.style.top = `${bodyRect.top - modalRect.top}px`;
+      nav.style.bottom = `${modalRect.bottom - bodyRect.bottom}px`;
+    };
+
+    const getRenderedFloors = () => Array.from(
+      scrollRoot.querySelectorAll('.ldp-post[data-post-number]')
+    ).map((node) => Number(node.dataset.postNumber))
+      .filter((floor) => Number.isFinite(floor) && floor >= 1)
+      .filter((floor, index, floors) => floors.indexOf(floor) === index)
+      .sort((a, b) => a - b);
+
+    const currentFloorAt = () => {
+      if (scrollRoot.scrollTop <= 2) return 1;
+      const rootRect = scrollRoot.getBoundingClientRect();
+      const probeY = rootRect.top + Math.min(rootRect.height * 0.35, 260);
+      const heads = Array.from(scrollRoot.querySelectorAll('.ldp-post-head'))
+        .map((head) => ({
+          top: head.getBoundingClientRect().top,
+          floor: Number(head.closest('.ldp-post')?.dataset.postNumber),
+        }))
+        .filter((item) => Number.isFinite(item.floor))
+        .sort((a, b) => a.top - b.top);
+      if (!heads.length) return 1;
+      let floor = heads[0].floor;
+      heads.forEach((item) => { if (item.top <= probeY) floor = item.floor; });
+      return floor;
+    };
+
+    const floorFromRatio = (ratio) => Math.max(
+      1, Math.min(totalFloors, Math.round(1 + ratio * (totalFloors - 1)))
+    );
+
+    const paint = (floor, showTip = false) => {
+      currentFloor = Math.max(1, Math.min(totalFloors, Number(floor) || 1));
+      const ratio = totalFloors > 1 ? (currentFloor - 1) / (totalFloors - 1) : 0;
+      const trackHeight = track.offsetHeight || nav.offsetHeight;
+      const y = 8 + Math.max(0, Math.min(1, ratio)) * trackHeight;
+      thumb.style.top = `${y}px`;
+      thumb.textContent = String(currentFloor);
+      tip.textContent = `#${currentFloor}`;
+      tip.style.top = `${y}px`;
+      if (showTip) tip.classList.add('show');
+    };
+
+    const updateThumbPosition = () => {
+      scrollRaf = 0;
+      if (dragging || nav.hidden) return;
+      const renderedFloors = getRenderedFloors();
+      if (!renderedFloors.length) return;
+      paint(currentFloorAt());
+    };
+
+    const onScroll = () => {
+      if (!scrollRaf) scrollRaf = requestAnimationFrame(updateThumbPosition);
+    };
+
+    const navigateToFloor = (floor) => {
+      const targetFloor = floorFromRatio(Math.max(0, Math.min(1,
+        (floor - 1) / Math.max(1, totalFloors - 1))));
+      if (targetFloor === currentFloor) {
+        paint(currentFloor);
+        return;
+      }
+      // 复用现有目标楼层逻辑：窗口加载、楼号修正、祖先链展开和高亮均由 openModal 完成。
+      openModal(topicId, targetFloor);
+    };
+
+    let lastTargetFloor = 1;
+    const onPointerMove = (event) => {
+      if (!dragging) return;
+      event.preventDefault();
+      const rect = track.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      lastTargetFloor = floorFromRatio(ratio);
+      const y = 8 + ratio * rect.height;
+      thumb.style.top = `${y}px`;
+      thumb.textContent = String(lastTargetFloor);
+      tip.textContent = `#${lastTargetFloor}`;
+      tip.style.top = `${y}px`;
+      tip.classList.add('show');
+    };
+
+    const onPointerUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      suppressClick = true;
+      thumb.style.cursor = 'grab';
+      tip.classList.remove('show');
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', onPointerUp);
+      navigateToFloor(lastTargetFloor);
+    };
+
+    thumb.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragging = true;
+      lastTargetFloor = currentFloor;
+      thumb.style.cursor = 'grabbing';
+      tip.classList.add('show');
+      document.addEventListener('pointermove', onPointerMove);
+      document.addEventListener('pointerup', onPointerUp);
+    });
+
+    nav.addEventListener('click', (event) => {
+      if (suppressClick) { suppressClick = false; return; }
+      if (event.target === thumb) return;
+      const rect = track.getBoundingClientRect();
+      const ratio = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      navigateToFloor(floorFromRatio(ratio));
+    });
+
+    scrollRoot.addEventListener('scroll', onScroll, { passive: true });
+    mutationObserver = new MutationObserver(() => {
+      clearTimeout(mutationTimer);
+      mutationTimer = setTimeout(() => {
+        updateGeometry();
+        updateThumbPosition();
+      }, 100);
+    });
+    mutationObserver.observe(scrollRoot, { childList: true, subtree: true });
+    resizeHandler = updateGeometry;
+    window.addEventListener('resize', resizeHandler);
+    updateGeometry();
+    geometryTimer = setTimeout(updateGeometry, 100);
+
+    return {
+      setTotal(total, initialFloor = 1) {
+        totalFloors = Math.max(1, Number(total) || 1);
+        nav.hidden = totalFloors <= 1;
+        paint(initialFloor);
+      },
+      refresh: updateGeometry,
+      destroy() {
+        scrollRoot.removeEventListener('scroll', onScroll);
+        if (scrollRaf) cancelAnimationFrame(scrollRaf);
+        if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+        if (mutationObserver) mutationObserver.disconnect();
+        clearTimeout(mutationTimer);
+        clearTimeout(geometryTimer);
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', onPointerUp);
+      },
+    };
+  }
+
   const SKELETON_HTML = `
     <div class="ldp-sk-head">
       <div class="ldp-sk ldp-sk-avatar"></div>
@@ -1433,7 +1620,11 @@
    *   阶段 2：解析 stream → 计算窗口 → 加载评论（后台进行）
    */
   async function openModal(topicId, targetPostNumber) {
-    if (CURRENT_OVERLAY) { CURRENT_OVERLAY.remove(); CURRENT_OVERLAY = null; }
+    if (CURRENT_OVERLAY) {
+      if (typeof CURRENT_OVERLAY.ldpClose === 'function') CURRENT_OVERLAY.ldpClose();
+      else CURRENT_OVERLAY.remove();
+      CURRENT_OVERLAY = null;
+    }
 
     const abortController = new AbortController();
     const overlay = document.createElement('div');
@@ -1479,6 +1670,11 @@
             <svg viewBox="0 0 24 24" fill="currentColor">${ICONS.newTab}</svg>
           </a>
         </div>
+        <div class="ldp-slider" hidden>
+          <div class="ldp-slider-track"></div>
+          <div class="ldp-slider-thumb" title="拖动跳转楼层">1</div>
+          <div class="ldp-slider-tip">#1</div>
+        </div>
       </div>`;
     document.body.appendChild(overlay);
     CURRENT_OVERLAY = overlay;
@@ -1503,6 +1699,7 @@
     const fBoostBtn = overlay.querySelector('.ldp-f-boost');
     const fBookmarkBtn = overlay.querySelector('.ldp-f-bookmark');
     const fOpenLink = overlay.querySelector('.ldp-f-open');
+    const floorNavigator = createFloorNavigator(overlay.querySelector('.ldp-slider'), body, topicId);
 
     const tracker = createReadTracker(topicId, body);
     const ctx = {
@@ -1518,6 +1715,7 @@
     const close = () => {
       abortController.abort(); // 取消所有进行中的请求
       tracker.stop();
+      floorNavigator.destroy();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
       document.removeEventListener('keydown', onEsc);
@@ -1526,6 +1724,7 @@
     overlay.querySelector('.ldp-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.addEventListener('keydown', onEsc);
+    overlay.ldpClose = close;
 
     /* ---- 底部"已加载全部评论"提示 ---- */
     function showBottomTip() {
@@ -1660,6 +1859,10 @@
 
           ctx.op = opPost.username;
           ctx.totalComments = anchorData.posts_count - 1;
+          floorNavigator.setTotal(
+              anchorData.highest_post_number || anchorData.posts_count || 1,
+              resolvedTarget
+          );
 
           // 更新标题和元数据
           overlay.querySelector('.ldp-title').textContent = anchorData.title;
@@ -1705,6 +1908,7 @@
             if (box.classList.contains('open')) { box.querySelector('textarea').focus(); box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
           });
           footerEl.hidden = false;
+          floorNavigator.refresh();
 
           bindActions(modal, ctx);
           tracker.start();
@@ -1947,6 +2151,10 @@
 
         ctx.op = opPost.username;
         ctx.totalComments = (topicMeta?.posts_count || 1) - 1;  // 总评论数 = 总帖子数 - 楼主
+        floorNavigator.setTotal(
+            topicMeta?.highest_post_number || topicMeta?.posts_count || 1,
+            1
+        );
 
         // 更新标题和元数据
         overlay.querySelector('.ldp-title').textContent = topicMeta?.title || `话题 #${topicId}`;
@@ -1990,6 +2198,7 @@
           if (box.classList.contains('open')) { box.querySelector('textarea').focus(); box.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
         });
         footerEl.hidden = false;
+        floorNavigator.refresh();
 
         bindActions(modal, ctx);
         tracker.start();
