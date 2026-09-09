@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.4.0
+// @version      1.5.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -140,6 +140,15 @@
     }
     .ldp-post-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
     .ldp-avatar{width:28px;height:28px;border-radius:50%;}
+    .ldp-user-link{display:inline-flex;align-items:center;gap:8px;color:inherit;
+      text-decoration:none;min-width:0;}
+    .ldp-user-link:hover{color:var(--tertiary,#08c);}
+    .ldp-user-link .ldp-avatar{transition:opacity .15s,transform .15s;}
+    .ldp-user-link:hover .ldp-avatar{opacity:.82;transform:scale(1.05);}
+    .ldp-boost-avatar-link{display:inline-flex;align-items:center;flex:none;
+      border-radius:50%;line-height:0;}
+    .ldp-boost-avatar-link:hover .ldp-b-avatar{opacity:.82;transform:scale(1.08);}
+    .ldp-b-avatar{transition:opacity .15s,transform .15s;}
     .ldp-author{font-weight:600;}
     .ldp-op{font-size:11px;font-weight:700;color:#fff;background:var(--tertiary,#08c);
       border-radius:4px;padding:1px 6px;letter-spacing:.5px;}
@@ -284,6 +293,18 @@
   /* ============ 2. 工具函数 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
       ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const escAttr = (s) => esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  function userProfileUrl(username) {
+    const name = typeof username === 'string' ? username.trim() : '';
+    return name ? `${BASE}/u/${encodeURIComponent(name)}/summary` : '';
+  }
+
+  function userProfileLabel(username, displayName) {
+    const label = typeof displayName === 'string' ? displayName.trim() : '';
+    const account = typeof username === 'string' ? username.trim() : '';
+    return label || (account ? `@${account}` : '查看用户');
+  }
 
   function fmtTime(iso) {
     if (!iso) return '';
@@ -451,9 +472,13 @@
     return boosts.map((b) => {
       const bAvatar = b.user && b.user.avatar_template
           ? BASE + b.user.avatar_template.replace('{size}', '36') : '';
+      const bProfileUrl = userProfileUrl(b.user && b.user.username);
+      const bProfileLabel = userProfileLabel(b.user && b.user.username, b.user && (b.user.name || b.user.display_name));
       const canDel = !!b.can_delete;
       return `<div class="ldp-boost-bubble" data-boost-id="${b.id}">` +
-          (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+          (bAvatar ? (bProfileUrl
+            ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"><img class="ldp-b-avatar" src="${bAvatar}" alt=""></a>`
+            : `<img class="ldp-b-avatar" src="${bAvatar}" alt="">`) : '') +
           `<p>${b.cooked || ''}</p>` +
           (canDel ? `<button class="ldp-boost-del" title="删除此Boost">×</button>` : '') +
           `</div>`;
@@ -711,6 +736,8 @@
     const isOP = ctx.op && p.username === ctx.op;
     const isME = ME_USERNAME && p.username === ME_USERNAME;
     const time = fmtTime(p.created_at);
+    const profileUrl = userProfileUrl(p.username);
+    const profileLabel = userProfileLabel(p.username, p.name || p.display_name);
 
     let cooked = p.cooked || '';
     cooked = (() => {
@@ -736,9 +763,11 @@
     node.dataset.postNumber = p.post_number;
     node.innerHTML = `
       <div class="ldp-post-head">
+        ${profileUrl ? `<a class="ldp-user-link" href="${profileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(profileLabel)}">` : ''}
         ${avatar ? `<img class="ldp-avatar" src="${avatar}" alt="" loading="lazy" decoding="async">` : ''}
         <span class="ldp-author">${esc(p.name || p.username)}</span>
         <span class="ldp-user">@${esc(p.username)}</span>
+        ${profileUrl ? '</a>' : ''}
         ${isOP ? '<span class="ldp-op">OP</span>' : ''}
         ${isME ? '<span class="ldp-me">ME</span>' : ''}
         ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
@@ -1106,11 +1135,15 @@
             if (listEl) {
               const bAvatar = res.user && res.user.avatar_template
                   ? BASE + res.user.avatar_template.replace('{size}', '36') : '';
+              const bProfileUrl = userProfileUrl(res.user && res.user.username);
+              const bProfileLabel = userProfileLabel(res.user && res.user.username, res.user && (res.user.name || res.user.display_name));
               const newBubble = document.createElement('div');
               newBubble.className = 'ldp-boost-bubble ldp-flash';
               newBubble.dataset.boostId = res.id;
               newBubble.innerHTML =
-                  (bAvatar ? `<img class="ldp-b-avatar" src="${bAvatar}" alt="">` : '') +
+                  (bAvatar ? (bProfileUrl
+                    ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"><img class="ldp-b-avatar" src="${bAvatar}" alt=""></a>`
+                    : `<img class="ldp-b-avatar" src="${bAvatar}" alt="">`) : '') +
                   `<p>${res.cooked || ''}</p>` +
                   `<button class="ldp-boost-del" title="删除此Boost">×</button>`;
               listEl.appendChild(newBubble);
