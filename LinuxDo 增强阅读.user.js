@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.5.0
+// @version      1.6.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -178,6 +178,11 @@
       .video-placeholder-overlay{display:none;}
     .ldp-content .video-placeholder-container.ldp-video-ready{cursor:default!important;background:#000;}
     .ldp-content video{display:block;width:100%;max-width:100%;max-height:70vh;background:#000;}
+    .ldp-content .ldp-spoiler{cursor:pointer;}
+    .ldp-content .ldp-spoiler.ldp-spoiler-blurred{
+      filter:blur(8px)!important;-webkit-filter:blur(8px)!important;
+      user-select:none;}
+    .ldp-content .ldp-spoiler.ldp-spoiler-expanded{cursor:default;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
     .ldp-children{margin-left:22px;
@@ -294,6 +299,33 @@
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
       ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
   const escAttr = (s) => esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+  function setSpoilerState(spoiler, blurred) {
+    spoiler.classList.add('spoiled');
+    spoiler.classList.toggle('spoiler-blurred', blurred);
+    spoiler.classList.toggle('spoiler-revealed', !blurred);
+    spoiler.classList.toggle('ldp-spoiler-blurred', blurred);
+    spoiler.classList.toggle('ldp-spoiler-expanded', !blurred);
+    spoiler.dataset.spoilerState = blurred ? 'blurred' : 'expanded';
+    spoiler.setAttribute('aria-expanded', String(!blurred));
+    spoiler.style.setProperty('filter', blurred ? 'blur(8px)' : 'none', 'important');
+    spoiler.style.setProperty('-webkit-filter', blurred ? 'blur(8px)' : 'none', 'important');
+  }
+
+  function prepareSpoilers(root) {
+    const spoilers = [];
+    const selector = '.spoiler, .spoiled, .spoiler-blurred, [data-spoiler-state]';
+    if (root.matches && root.matches(selector)) {
+      spoilers.push(root);
+    }
+    spoilers.push(...root.querySelectorAll(selector));
+    spoilers.forEach((spoiler) => {
+      spoiler.classList.add('ldp-spoiler');
+      spoiler.setAttribute('role', 'button');
+      spoiler.setAttribute('tabindex', '0');
+      setSpoilerState(spoiler, true);
+    });
+  }
 
   function userProfileUrl(username) {
     const name = typeof username === 'string' ? username.trim() : '';
@@ -798,6 +830,7 @@
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
+    prepareSpoilers(node.querySelector('.ldp-content'));
     renderMath(node);
     return node;
   }
@@ -1050,6 +1083,20 @@
   /* ============ 10. 事件委托 ============ */
   function bindActions(modal, ctx) {
     modal.addEventListener('click', async (e) => {
+      const spoiler = e.target.closest('.ldp-spoiler');
+      if (spoiler && spoiler.classList.contains('ldp-spoiler-blurred')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSpoilerState(spoiler, false);
+        return;
+      }
+      if (spoiler && spoiler.classList.contains('ldp-spoiler-expanded')
+          && !e.target.closest('a, button, input, video, img')) {
+        e.preventDefault();
+        e.stopPropagation();
+        setSpoilerState(spoiler, true);
+        return;
+      }
       const videoPlaceholder = e.target.closest('.video-placeholder-container[data-video-src]');
       if (videoPlaceholder && !videoPlaceholder.querySelector('video')) {
         e.preventDefault();
@@ -1241,6 +1288,13 @@
         }
         return;
       }
+      });
+
+    modal.addEventListener('keydown', (e) => {
+      const spoiler = e.target.closest('.ldp-spoiler');
+      if (!spoiler || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      spoiler.click();
     });
   }
 
