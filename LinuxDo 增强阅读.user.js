@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.6.0
+// @version      1.7.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -155,6 +155,7 @@
     .ldp-me{font-size:11px;font-weight:700;color:#fff;background:#3ea66b;
       border-radius:4px;padding:1px 6px;letter-spacing:.5px;}
     .ldp-user{font-size:12px;opacity:.6;}
+    .ldp-level{font-size:11px;opacity:.5;}
     .ldp-time{font-size:12px;opacity:.55;}
     .ldp-floor{font-size:12px;opacity:.5;margin-left:auto;
       padding-left:8px;white-space:nowrap;}
@@ -800,6 +801,7 @@
         <span class="ldp-author">${esc(p.name || p.username)}</span>
         <span class="ldp-user">@${esc(p.username)}</span>
         ${profileUrl ? '</a>' : ''}
+        ${p.trust_level != null ? `<span class="ldp-level">Lv.${p.trust_level}</span>` : ''}
         ${isOP ? '<span class="ldp-op">OP</span>' : ''}
         ${isME ? '<span class="ldp-me">ME</span>' : ''}
         ${time ? `<span class="ldp-time">· ${esc(time)}</span>` : ''}
