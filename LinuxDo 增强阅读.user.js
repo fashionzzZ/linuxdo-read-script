@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.1
+// @version      1.8.2
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -201,8 +201,21 @@
       border:1px solid var(--primary-low,#ccc);border-radius:6px;padding:8px;
       font:inherit;background:var(--secondary,#fff);color:inherit;resize:vertical;}
     .ldp-replybox textarea.uploading{opacity:0.6;pointer-events:none;}
+    .ldp-reply-tools{display:flex;align-items:center;gap:6px;margin-top:6px;}
+    .ldp-insert-wrap{position:relative;}
+    .ldp-insert-menu{position:absolute;top:calc(100% + 4px);left:0;z-index:20;
+      min-width:150px;padding:4px 0;border:1px solid var(--primary-low,#ddd);
+      border-radius:6px;background:var(--secondary,#fff);
+      box-shadow:0 6px 24px rgba(0,0,0,.18);list-style:none;margin:0;}
+    .ldp-insert-menu[hidden]{display:none;}
+    .ldp-insert-item{display:flex;align-items:center;gap:8px;width:100%;
+      padding:7px 10px;border:none;background:transparent;color:inherit;
+      font-size:13px;text-align:left;cursor:pointer;white-space:nowrap;}
+    .ldp-insert-item:hover{background:var(--primary-low,#f0f0f0);}
+    .ldp-insert-item svg{width:14px;height:14px;flex:none;fill:currentColor;}
     .ldp-send{margin-top:6px;background:var(--tertiary,#08c);color:#fff;border:none;
       border-radius:6px;padding:6px 14px;cursor:pointer;}
+    .ldp-reply-tools .ldp-send{margin-top:0;}
     .ldp-reply-tip{margin-left:10px;font-size:12px;color:#3ea66b;opacity:0;
       transition:opacity .25s ease;}
     .ldp-reply-tip.show{opacity:1;}
@@ -336,6 +349,9 @@
 
   /* 表情按钮图标（复用 Discourse 内置 sprite） */
   const EMOJI_BTN_ICON = '<svg class="fa d-icon d-icon-far-face-smile svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#far-face-smile"></use></svg>';
+  const INSERT_BTN_ICON = '<svg class="fa d-icon d-icon-circle-plus svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#circle-plus"></use></svg>';
+  const DETAILS_ICON = '<svg class="fa d-icon d-icon-angle-right svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#angle-right"></use></svg>';
+  const SPOILER_ICON = '<svg class="fa d-icon d-icon-wand-magic svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#wand-magic"></use></svg>';
 
   /* ============ 2. 工具函数 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
@@ -1199,11 +1215,39 @@
     const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '').replace(/^@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
-    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (最少16个字符)"></textarea><button class="ldp-emoji-btn ldp-reply-emoji" type="button" title="表情">${EMOJI_BTN_ICON}</button><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
+    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (最少16个字符)"></textarea><div class="ldp-reply-tools"><div class="ldp-insert-wrap"><button class="ldp-emoji-btn ldp-reply-insert" type="button" title="插入模板" aria-haspopup="true" aria-expanded="false">${INSERT_BTN_ICON}</button><div class="ldp-insert-menu" hidden><button class="ldp-insert-item ldp-reply-details" type="button">${DETAILS_ICON}<span>隐藏详细信息</span></button><button class="ldp-insert-item ldp-reply-spoiler" type="button">${SPOILER_ICON}<span>模糊剧透</span></button></div></div><button class="ldp-emoji-btn ldp-reply-emoji" type="button" title="表情">${EMOJI_BTN_ICON}</button><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span></div>`;
     const textarea = box.querySelector('textarea');
     bindPasteEvent(textarea);
     const emojiBtn = box.querySelector('.ldp-reply-emoji');
     emojiBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleEmojiPanel(emojiBtn, textarea); });
+    const insertBtn = box.querySelector('.ldp-reply-insert');
+    const insertMenu = box.querySelector('.ldp-insert-menu');
+    const onInsertMenuOutside = (e) => {
+      if (!insertMenu.contains(e.target) && !insertBtn.contains(e.target)) closeInsertMenu();
+    };
+    const closeInsertMenu = () => {
+      insertMenu.hidden = true;
+      insertBtn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', onInsertMenuOutside, true);
+    };
+    insertBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (insertMenu.hidden) {
+        insertMenu.hidden = false;
+        insertBtn.setAttribute('aria-expanded', 'true');
+        document.addEventListener('mousedown', onInsertMenuOutside, true);
+      } else {
+        closeInsertMenu();
+      }
+    });
+    box.querySelector('.ldp-reply-details').addEventListener('click', () => {
+      insertAtCursor(textarea, '[details="总结"]\n此文本将被隐藏\n[/details]');
+      closeInsertMenu();
+    });
+    box.querySelector('.ldp-reply-spoiler').addEventListener('click', () => {
+      insertAtCursor(textarea, '[spoiler]此文本将被模糊处理[/spoiler]');
+      closeInsertMenu();
+    });
     const actions = post.querySelector(':scope > .ldp-actions');
     if (actions) actions.after(box);
     else post.appendChild(box);

@@ -5,7 +5,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、原图灯箱一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.8.1-blue)
+![version](https://img.shields.io/badge/version-1.8.2-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -45,7 +45,7 @@
 | 滚动弹窗 | 自动双向续加载后续/前序楼层，并按停留时长上报已读 |
 | 点击图片 | 原图灯箱查看，点击图片/空白、Esc 或右上角 × 关闭 |
 | ♥ 按钮 | 点赞 / 取消赞 |
-| ↩ 回复 | 展开回复框，发送后插入楼中楼 |
+| ↩ 回复 | 展开回复框，发送后插入楼中楼；支持插入「隐藏详细信息」和「模糊剧透」模板 |
 | Boost 按钮 | 对该楼发送/撤回一条简短文字 Boost |
 | 底部悬浮工具栏 | 随时对楼主帖点赞、回复、Boost、收藏、打开原帖，无需滚回顶部 |
 | ☆ 收藏本帖 | 收藏 / 取消收藏整帖 |
