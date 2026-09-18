@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.0
+// @version      1.8.1
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -1210,13 +1210,238 @@
     return box;
   }
 
-  /* ============ 图片粘贴上传 ============ */
-  async function uploadImage(file) {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('type', 'composer');
-    formData.append('synchronous', 'true');
-    return apiSend(`${BASE}/uploads.json`, 'POST', formData);
+  /* ============ 文件粘贴上传 ============ */
+  const MULTIPART_UPLOAD_CONCURRENCY = 6;
+  const MULTIPART_RETRY_DELAYS = [0, 1000, 3000, 5000];
+  const HUGE_FILE_CHECKSUM_LIMIT = 100 * 1024 * 1024;
+  const DISCOURSE_IMAGE_SIZE_LIMIT = 4 * 1024 * 1024;
+  const OFFICIAL_MEDIA_WORKER_URL = 'https://cdn3.ldstatic.com/assets/br/chunk-bgg7iqfw.digested.js';
+  const IMAGE_MAGICK_CDN = 'https://cdn.jsdelivr.net/npm/@imagemagick/magick-wasm@0.0.43/dist/index.js';
+  const IMAGE_MAGICK_WASM = 'https://cdn.jsdelivr.net/npm/@imagemagick/magick-wasm@0.0.43/dist/x86/magick.wasm';
+  const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'svg', 'ico', 'webp', 'avif', 'heic', 'heif', 'jxl']);
+  const AUDIO_EXTENSIONS = new Set(['mp3', 'ogg', 'oga', 'opus', 'wav', 'm4a', 'm4b', 'm4p', 'm4r', 'aac', 'flac']);
+  const VIDEO_EXTENSIONS = new Set(['mov', 'mp4', 'webm', 'ogv', 'm4v', '3gp', 'avi', 'mpeg']);
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  function fileExtension(filename) {
+    const match = (filename || '').match(/\.([a-z0-9]+)$/i);
+    return match ? match[1].toLowerCase() : '';
+  }
+
+  async function fileSha1(file) {
+    if (!window.isSecureContext || !file.arrayBuffer || !window.crypto?.subtle?.digest) return '';
+    if (file.size > HUGE_FILE_CHECKSUM_LIMIT) return '';
+    try {
+      const buffer = await file.arrayBuffer();
+      const digest = await window.crypto.subtle.digest('SHA-1', buffer);
+      return Array.from(new Uint8Array(digest))
+        .map((byte) => byte.toString(16).padStart(2, '0'))
+        .join('');
+    } catch (err) {
+      return '';
+    }
+  }
+
+  function multipartChunkSize(fileSize) {
+    if (fileSize >= 500 * 1024 * 1024) return 20 * 1024 * 1024;
+    if (fileSize >= 100 * 1024 * 1024) return 10 * 1024 * 1024;
+    return 5 * 1024 * 1024;
+  }
+
+  function webpFileName(fileName) {
+    const baseName = (fileName || 'clipboard-file').replace(/\.[^.]+$/, '');
+    return `${baseName || 'clipboard-file'}.webp`;
+  }
+
+  let imageMagickReady;
+
+  async function ensureImageMagick() {
+    if (!imageMagickReady) {
+      imageMagickReady = (async () => {
+        const { initializeImageMagick } = await import(IMAGE_MAGICK_CDN);
+        await initializeImageMagick(new URL(IMAGE_MAGICK_WASM));
+      })();
+    }
+    return imageMagickReady;
+  }
+
+  async function convertAnimatedGifWithOfficialWorker(file) {
+    const input = await file.arrayBuffer();
+    // Blob Worker 只是官方 chunk 的入口包装，chunk 内相对 WASM 路径仍会解析到 L 站 CDN。
+    const worker = new Worker(URL.createObjectURL(new Blob([
+      `import '${OFFICIAL_MEDIA_WORKER_URL}';`,
+    ], { type: 'text/javascript' })), { type: 'module' });
+
+    try {
+      return await new Promise((resolve, reject) => {
+        worker.onmessage = (event) => {
+          const message = event.data;
+          if (message.type === 'file') {
+            const blob = new Blob([message.file], { type: message.outputType });
+            resolve(blob.size < file.size && blob.size <= DISCOURSE_IMAGE_SIZE_LIMIT
+              ? new File([blob], webpFileName(file.name), { type: message.outputType })
+              : null);
+          } else if (message.type === 'skipped') {
+            resolve(null);
+          } else {
+            reject(new Error('官方图片处理 Worker 返回异常'));
+          }
+        };
+        worker.onerror = () => reject(new Error('官方图片处理 Worker 加载失败'));
+        worker.onmessageerror = () => reject(new Error('官方图片处理 Worker 消息解析失败'));
+
+        worker.postMessage({
+          type: 'convertAnimated',
+          file: input,
+          fileName: file.name || 'clipboard-file',
+          fileId: `${file.name}-${file.size}`,
+          originalFileSize: file.size,
+          settings: { encode_quality: 75, debug_mode: false },
+        }, [input]);
+      });
+    } finally {
+      worker.terminate();
+    }
+  }
+
+  async function preprocessImage(file) {
+    if (file.size <= DISCOURSE_IMAGE_SIZE_LIMIT) return file;
+    if (!file.type.startsWith('image/') && !IMAGE_EXTENSIONS.has(fileExtension(file.name))) return file;
+
+    if (file.type === 'image/gif' || fileExtension(file.name) === 'gif') {
+      try {
+        const converted = await convertAnimatedGifWithOfficialWorker(file);
+        if (converted) return converted;
+        console.warn('[LinuxDo 增强阅读] 官方 Worker 未产出更小的 WebP，将尝试上传原 GIF');
+        return file;
+      } catch (err) {
+        console.warn('[LinuxDo 增强阅读] 官方 GIF 预处理失败，将回退 ImageMagick:', err);
+      }
+    }
+
+    try {
+      await ensureImageMagick();
+      const { ImageMagick, MagickFormat } = await import(IMAGE_MAGICK_CDN);
+      const input = new Uint8Array(await file.arrayBuffer());
+      const output = await ImageMagick.readCollection(input, async images => {
+        images.forEach(image => { image.quality = 75; });
+        return await images.write(MagickFormat.WebP, data => data);
+      });
+      const blob = new Blob([output], { type: 'image/webp' });
+      if (blob.size >= file.size || blob.size > DISCOURSE_IMAGE_SIZE_LIMIT) return file;
+      return new File([blob], webpFileName(file.name), { type: 'image/webp' });
+    } catch (err) {
+      console.warn('[LinuxDo 增强阅读] 图片 ImageMagick 预处理失败，将尝试上传原文件:', err);
+      return file;
+    }
+  }
+
+  async function createMultipartUpload(file) {
+    const params = new URLSearchParams();
+    params.set('file_name', file.name || 'clipboard-file');
+    params.set('file_size', String(file.size));
+    params.set('upload_type', 'composer');
+    const sha1 = await fileSha1(file);
+    if (sha1) params.set('metadata[sha1-checksum]', sha1);
+    return apiSend(`${BASE}/uploads/create-multipart.json`, 'POST', params);
+  }
+
+  async function presignMultipartParts(uniqueIdentifier, partNumbers) {
+    const params = new URLSearchParams();
+    params.set('unique_identifier', uniqueIdentifier);
+    partNumbers.forEach((partNumber) => params.append('part_numbers[]', String(partNumber)));
+    return apiSend(`${BASE}/uploads/batch-presign-multipart-parts.json`, 'POST', params);
+  }
+
+  async function uploadMultipartPart(file, partNumber, start, end, url) {
+    for (let attempt = 0; attempt < MULTIPART_RETRY_DELAYS.length; attempt++) {
+      try {
+        const res = await fetch(url, { method: 'PUT', body: file.slice(start, end) });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const etag = res.headers.get('ETag');
+        if (!etag) throw new Error('S3 未返回 ETag');
+        return { part_number: partNumber, etag };
+      } catch (err) {
+        if (attempt === MULTIPART_RETRY_DELAYS.length - 1) throw err;
+        await sleep(MULTIPART_RETRY_DELAYS[attempt + 1]);
+      }
+    }
+    return null;
+  }
+
+  async function uploadMultipartParts(file, uniqueIdentifier) {
+    const chunkSize = multipartChunkSize(file.size);
+    const totalParts = Math.ceil(file.size / chunkSize);
+    const parts = new Array(totalParts);
+
+    for (let partNumber = 1; partNumber <= totalParts; partNumber += MULTIPART_UPLOAD_CONCURRENCY) {
+      const batchNumbers = [];
+      for (let n = partNumber; n < Math.min(partNumber + MULTIPART_UPLOAD_CONCURRENCY, totalParts + 1); n++) {
+        batchNumbers.push(n);
+      }
+      const { presigned_urls: presignedUrls } = await presignMultipartParts(uniqueIdentifier, batchNumbers);
+      const uploadedParts = await Promise.all(batchNumbers.map((n) => uploadMultipartPart(
+        file,
+        n,
+        (n - 1) * chunkSize,
+        Math.min(n * chunkSize, file.size),
+        presignedUrls[n],
+      )));
+      uploadedParts.forEach((part) => { parts[part.part_number - 1] = part; });
+    }
+    return parts;
+  }
+
+  async function completeMultipartUpload(uniqueIdentifier, parts) {
+    const res = await fetch(`${BASE}/uploads/complete-multipart.json`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-CSRF-Token': csrfToken(),
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({ unique_identifier: uniqueIdentifier, parts, pasted: true }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json().catch(() => ({}));
+  }
+
+  async function abortMultipartUpload(uploadId) {
+    return apiSend(`${BASE}/uploads/abort-multipart.json`, 'POST', {
+      external_upload_identifier: uploadId,
+    });
+  }
+
+  async function uploadFile(file) {
+    let uploadId;
+    try {
+      const created = await createMultipartUpload(file);
+      if (!created?.unique_identifier || !created?.external_upload_identifier) {
+        throw new Error('上传初始化返回数据异常');
+      }
+      uploadId = created.external_upload_identifier;
+      const parts = await uploadMultipartParts(file, created.unique_identifier);
+      return await completeMultipartUpload(created.unique_identifier, parts);
+    } catch (err) {
+      if (uploadId) await abortMultipartUpload(uploadId).catch(() => {});
+      throw err;
+    }
+  }
+
+  function uploadMarkdown(res) {
+    const label = (res.original_filename || '附件').replace(/[\[\]\|]/g, '');
+    const extension = fileExtension(res.original_filename);
+    if (IMAGE_EXTENSIONS.has(extension)) {
+      return res.width && res.height
+        ? `![${label}|${res.width}x${res.height}](${res.short_url})`
+        : `![${label}](${res.short_url})`;
+    }
+    if (AUDIO_EXTENSIONS.has(extension)) return `![${label}|audio](${res.short_url})`;
+    if (VIDEO_EXTENSIONS.has(extension)) return `![${label}|video](${res.short_url})`;
+    return `[${label}|attachment](${res.short_url})${res.human_filesize ? ` (${res.human_filesize})` : ''}`;
   }
 
   function insertAtCursor(textarea, text) {
@@ -1232,23 +1457,23 @@
     textarea.addEventListener('paste', async (e) => {
       const items = (e.clipboardData || e.originalEvent.clipboardData).items;
       for (const item of items) {
-        if (item.type.indexOf('image') !== -1) {
+        if (item.kind === 'file') {
           e.preventDefault();
           const file = item.getAsFile();
           if (!file) continue;
-          const placeholder = `[正在上传图片 ${file.name} ...]`;
+          const placeholder = `[正在上传文件 ${file.name} ...]`;
           insertAtCursor(textarea, placeholder);
           textarea.classList.add('uploading');
           try {
-            const res = await uploadImage(file);
+            const uploadableFile = await preprocessImage(file);
+            const res = await uploadFile(uploadableFile);
             if (res && res.short_url) {
-              const markdown = `![${res.original_filename}|${res.width}x${res.height}](${res.short_url})`;
-              textarea.value = textarea.value.replace(placeholder, markdown);
+              textarea.value = textarea.value.replace(placeholder, uploadMarkdown(res));
             } else {
               throw new Error('上传返回数据异常');
             }
           } catch (err) {
-            textarea.value = textarea.value.replace(placeholder, `[图片上传失败: ${err.message}]`);
+            textarea.value = textarea.value.replace(placeholder, `[文件上传失败: ${err.message}]`);
           } finally {
             textarea.classList.remove('uploading');
           }
