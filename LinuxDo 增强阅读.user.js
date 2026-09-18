@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.7.0
+// @version      1.8.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -197,7 +197,7 @@
 
     .ldp-replybox{margin-top:8px;display:none;position:relative;}
     .ldp-replybox.open{display:block;}
-    .ldp-replybox textarea{width:100%;min-height:90px;box-sizing:border-box;
+    .ldp-replybox textarea{width:100%;min-height:90px;box-sizing:border-box;margin-bottom:0px;
       border:1px solid var(--primary-low,#ccc);border-radius:6px;padding:8px;
       font:inherit;background:var(--secondary,#fff);color:inherit;resize:vertical;}
     .ldp-replybox textarea.uploading{opacity:0.6;pointer-events:none;}
@@ -284,6 +284,44 @@
     .ldp-boost-cancel:hover{background:var(--danger,#cc4b4b);color:#fff;}
     .ldp-btn.ldp-boost-btn{font-size:12px;}
     .ldp-btn.ldp-boost-btn:disabled{opacity:.35;cursor:default;pointer-events:none;}
+
+    /* ============ Emoji Picker 样式 ============ */
+    .ldp-emoji-btn{width:22px;height:22px;padding:0;display:flex;flex:none;
+      align-items:center;justify-content:center;border-radius:50%;
+      border:1px solid var(--primary-low,#ccc);background:transparent;
+      color:var(--primary-medium,#666);cursor:pointer;font-size:14px;line-height:1;
+      transition:all .15s;position:relative;}
+    .ldp-emoji-btn:hover{background:var(--primary-low,#f0f0f0);color:var(--tertiary,#3b82f6);}
+    .ldp-emoji-btn svg{width:14px;height:14px;fill:currentColor;display:block;}
+    .ldp-emoji-panel{position:fixed;z-index:2147483500;width:320px;height:360px;
+      background:var(--secondary,#fff);border:1px solid var(--primary-low,#ddd);
+      border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,.18);
+      display:flex;flex-direction:column;overflow:hidden;font-size:13px;}
+    .ldp-emoji-search{flex:none;padding:6px 8px;border-bottom:1px solid var(--primary-low,#eee);}
+    .ldp-emoji-search input{width:100%;box-sizing:border-box;border:1px solid var(--primary-low,#ccc);
+      border-radius:6px;padding:5px 8px;font-size:12px;outline:none;
+      background:var(--secondary,#fff);color:inherit;}
+    .ldp-emoji-tabs{flex:none;display:flex;border-bottom:1px solid var(--primary-low,#eee);
+      overflow-x:auto;padding:0 4px;}
+    .ldp-emoji-tabs::-webkit-scrollbar{display:none;}
+    .ldp-emoji-tab{flex:none;width:30px;height:30px;padding:0;cursor:pointer;
+      display:flex;align-items:center;justify-content:center;font-size:16px;
+      opacity:.5;border-bottom:2px solid transparent;transition:all .15s;
+      background:none;border-top:none;border-left:none;border-right:none;}
+    .ldp-emoji-tab img{width:20px;height:20px;display:block;}
+    .ldp-emoji-tab:hover{opacity:.8;}
+    .ldp-emoji-tab.active{opacity:1;border-bottom-color:var(--tertiary,#08c);}
+    .ldp-emoji-grid{flex:1;overflow-y:auto;padding:6px;display:grid;
+      grid-template-columns:repeat(8,1fr);gap:2px;align-content:start;}
+    .ldp-emoji-grid::-webkit-scrollbar{width:5px;}
+    .ldp-emoji-grid::-webkit-scrollbar-thumb{background:rgba(128,128,128,.3);border-radius:3px;}
+    .ldp-emoji-item{width:100%;aspect-ratio:1;display:flex;align-items:center;
+      justify-content:center;border-radius:6px;cursor:pointer;border:none;
+      background:transparent;padding:2px;transition:background .1s;}
+    .ldp-emoji-item:hover{background:var(--primary-low,#f0f0f0);}
+    .ldp-emoji-item img{width:24px;height:24px;display:block;}
+    .ldp-emoji-empty{grid-column:1/-1;text-align:center;padding:20px 0;
+      color:var(--primary-medium,#999);font-size:12px;}
   `;
   document.head.appendChild(style);
 
@@ -295,6 +333,9 @@
     bookmark: '<path d="M17 3H7c-1.1 0-1.99.9-1.99 2L5 21l7-3 7 3V5c0-1.1-.9-2-2-2z"/>',
     newTab: '<path d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>'
   };
+
+  /* 表情按钮图标（复用 Discourse 内置 sprite） */
+  const EMOJI_BTN_ICON = '<svg class="fa d-icon d-icon-far-face-smile svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#far-face-smile"></use></svg>';
 
   /* ============ 2. 工具函数 ============ */
   const esc = (s) => (s || '').replace(/[<>&]/g, (c) =>
@@ -497,6 +538,227 @@
     m = href.match(/\/t\/(\d+)(?:\/(\d+))?/);
     if (m) return { topicId: m[1], targetPostNumber: m[2] ? +m[2] : null };
     return null;
+  }
+
+  /* ============ 2.55 Emoji Picker ============ */
+  const EMOJI_CACHE_KEY = 'ldp_recent_emojis';
+  const EMOJI_RECENT_MAX = 10;
+  let emojiDataCache = null;
+  let emojiDataLoading = null;
+
+  function getRecentEmojis() {
+    try { return JSON.parse(localStorage.getItem(EMOJI_CACHE_KEY)) || []; }
+    catch { return []; }
+  }
+  function addRecentEmoji(name) {
+    let list = getRecentEmojis().filter(n => n !== name);
+    list.unshift(name);
+    if (list.length > EMOJI_RECENT_MAX) list = list.slice(0, EMOJI_RECENT_MAX);
+    localStorage.setItem(EMOJI_CACHE_KEY, JSON.stringify(list));
+  }
+
+  let _emojiSet = 'twemoji';
+  (function detectEmojiSet() {
+    const img = document.querySelector('img.emoji[src*="/images/emoji/"]');
+    if (img) { const m = img.src.match(/\/images\/emoji\/([^/]+)\//); if (m) _emojiSet = m[1]; }
+  })();
+
+  /** emojiUrlMap: name -> url (populated by fetchEmojiData) */
+  const emojiUrlMap = new Map();
+
+  function emojiUrl(name) {
+    if (emojiUrlMap.has(name)) return emojiUrlMap.get(name);
+    return `https://cdn.ldstatic.com/images/emoji/${_emojiSet}/${name}.png`;
+  }
+
+  async function fetchEmojiData() {
+    if (emojiDataCache) return emojiDataCache;
+    if (emojiDataLoading) return emojiDataLoading;
+    emojiDataLoading = (async () => {
+      const CACHE_NAME = 'ldp-emoji-v2';
+      const CACHE_URL  = `${BASE}/emojis.json`;
+      let raw;
+      try {
+        const cache = await caches.open(CACHE_NAME);
+        let cached = await cache.match(CACHE_URL);
+        if (!cached) {
+          const res = await fetch(CACHE_URL, { credentials: 'include' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          await cache.put(CACHE_URL, res.clone());
+          cached = res;
+        }
+        raw = await cached.json();
+      } catch {
+        // Cache API unavailable (e.g. non-secure context): fall back to plain fetch
+        const res = await fetch(CACHE_URL, { credentials: 'include' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        raw = await res.json();
+      }
+      // Parse: { group: [ {name, url, tonable}, ... ] }
+      const groups = {};
+      for (const [gKey, arr] of Object.entries(raw)) {
+        if (!Array.isArray(arr)) continue;
+        groups[gKey] = arr.map(e => {
+          const name = (e && e.name) ? e.name : String(e);
+          if (e && e.url) {
+            let url = e.url;
+            if (url.startsWith('//')) url = 'https:' + url;          // protocol-relative (custom emoji on S3)
+            else if (!url.startsWith('http')) url = BASE + url;      // site-relative (standard emoji)
+            emojiUrlMap.set(name, url.replace('https://linux.do', 'https://cdn.ldstatic.com'));
+          }
+          return name;
+        });
+      }
+      emojiDataCache = groups;
+      emojiDataLoading = null;
+      return groups;
+    })().catch(err => { emojiDataLoading = null; throw err; });
+    return emojiDataLoading;
+  }
+
+  function buildEmojiPanel(onPick) {
+    const panel = document.createElement('div');
+    panel.className = 'ldp-emoji-panel';
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'ldp-emoji-search';
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.placeholder = '\u641C\u7D22\u8868\u60C5\u2026';
+    searchWrap.appendChild(searchInput);
+    panel.appendChild(searchWrap);
+    const tabsWrap = document.createElement('div');
+    tabsWrap.className = 'ldp-emoji-tabs';
+    panel.appendChild(tabsWrap);
+    const grid = document.createElement('div');
+    grid.className = 'ldp-emoji-grid';
+    panel.appendChild(grid);
+    let currentGroup = 'recent';
+    let allGroups = null;
+    function renderGrid(names, groupKey) {
+      grid.innerHTML = '';
+      if (!names || !names.length) {
+        grid.innerHTML = '<div class="ldp-emoji-empty">' +
+          (groupKey === 'recent' ? '\u6682\u65E0\u6700\u8FD1\u4F7F\u7528\u7684\u8868\u60C5' : '\u6CA1\u6709\u627E\u5230\u8868\u60C5') + '</div>';
+        return;
+      }
+      const frag = document.createDocumentFragment();
+      for (const name of names) {
+        const btn = document.createElement('button');
+        btn.className = 'ldp-emoji-item';
+        btn.title = ':' + name + ':';
+        btn.innerHTML = `<img src="${emojiUrl(name)}" alt="${esc(name)}" loading="lazy">`;
+        btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); addRecentEmoji(name); onPick(':' + name + ':'); });
+        frag.appendChild(btn);
+      }
+      grid.appendChild(frag);
+    }
+    function switchTab(groupKey) {
+      currentGroup = groupKey;
+      tabsWrap.querySelectorAll('.ldp-emoji-tab').forEach(t => t.classList.toggle('active', t.dataset.group === groupKey));
+      if (groupKey === 'recent') { renderGrid(getRecentEmojis(), 'recent'); }
+      else if (allGroups && allGroups[groupKey]) { renderGrid(allGroups[groupKey], groupKey); }
+    }
+    function doSearch(q) {
+      if (!allGroups) return;
+      q = q.toLowerCase().trim();
+      if (!q) { switchTab(currentGroup); return; }
+      tabsWrap.querySelectorAll('.ldp-emoji-tab').forEach(t => t.classList.remove('active'));
+      const results = [];
+      for (const [gk, names] of Object.entries(allGroups)) {
+        for (const n of names) { if (n.toLowerCase().includes(q)) results.push({ name: n, group: gk }); }
+      }
+      grid.innerHTML = '';
+      if (!results.length) { grid.innerHTML = '<div class="ldp-emoji-empty">\u6CA1\u6709\u627E\u5230\u8868\u60C5</div>'; return; }
+      const frag = document.createDocumentFragment();
+      for (const r of results) {
+        const btn = document.createElement('button');
+        btn.className = 'ldp-emoji-item';
+        btn.title = ':' + r.name + ':';
+        btn.innerHTML = `<img src="${emojiUrl(r.name)}" alt="${esc(r.name)}" loading="lazy">`;
+        btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); addRecentEmoji(r.name); onPick(':' + r.name + ':'); });
+        frag.appendChild(btn);
+      }
+      grid.appendChild(frag);
+    }
+    grid.innerHTML = '<div class="ldp-emoji-empty">\u52A0\u8F7D\u4E2D\u2026</div>';
+    fetchEmojiData().then(groups => {
+      allGroups = groups;
+      // Build tabs entirely from the API groups, with "recent" pinned first.
+      // Each tab icon is the group's first emoji for a recognizable visual.
+      const RECENT_ICON = 'https://cdn.ldstatic.com/images/emoji/twemoji/star.png?v=15';
+      const tabList = [{ key: 'recent', label: '\u6700\u8FD1', iconUrl: RECENT_ICON }];
+      for (const gKey of Object.keys(groups)) {
+        if (!groups[gKey].length) continue;
+        tabList.push({ key: gKey, label: gKey, first: groups[gKey][0] });
+      }
+      tabsWrap.innerHTML = '';
+      for (const g of tabList) {
+        const tab = document.createElement('button');
+        tab.className = 'ldp-emoji-tab' + (g.key === 'recent' ? ' active' : '');
+        tab.dataset.group = g.key;
+        tab.title = g.label;
+        const img = document.createElement('img');
+        img.src = g.iconUrl || emojiUrl(g.first);
+        img.alt = g.label;
+        img.loading = 'lazy';
+        tab.appendChild(img);
+        tab.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); searchInput.value = ''; switchTab(g.key); });
+        tabsWrap.appendChild(tab);
+      }
+      switchTab('recent');
+    }).catch(() => { grid.innerHTML = '<div class="ldp-emoji-empty">\u8868\u60C5\u52A0\u8F7D\u5931\u8D25</div>'; });
+    let searchTimer = null;
+    searchInput.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => doSearch(searchInput.value), 200); });
+    return panel;
+  }
+
+  function toggleEmojiPanel(triggerBtn, inputEl) {
+    const existing = triggerBtn._ldpEmojiPanel;
+    if (existing && existing.parentNode) { existing.remove(); triggerBtn._ldpEmojiPanel = null; return; }
+    const panel = buildEmojiPanel((code) => {
+      if (inputEl.tagName === 'TEXTAREA' || inputEl.tagName === 'INPUT') {
+        const start = inputEl.selectionStart || 0;
+        const end = inputEl.selectionEnd || 0;
+        const val = inputEl.value;
+        inputEl.value = val.substring(0, start) + code + val.substring(end);
+        inputEl.selectionStart = inputEl.selectionEnd = start + code.length;
+        inputEl.focus();
+      }
+      panel.remove();
+      triggerBtn._ldpEmojiPanel = null;
+    });
+    // Use fixed positioning so the panel isn't clipped by overflow:hidden ancestors
+    panel.style.position = 'fixed';
+    document.body.appendChild(panel);
+    triggerBtn._ldpEmojiPanel = panel;
+    const panelW = 320, panelH = 360, gap = 6;
+    const btnRect = triggerBtn.getBoundingClientRect();
+    // Find the modal container to constrain within it
+    const modal = triggerBtn.closest('.ldp-modal');
+    const bounds = modal ? modal.getBoundingClientRect()
+                         : { top: 0, left: 0, bottom: window.innerHeight, right: window.innerWidth };
+    // Vertical: prefer above the button, fall back to below
+    let top;
+    if (btnRect.top - panelH - gap >= bounds.top) {
+      top = btnRect.top - panelH - gap;
+    } else {
+      top = btnRect.bottom + gap;
+    }
+    // Clamp vertically within bounds
+    if (top + panelH > bounds.bottom) top = bounds.bottom - panelH;
+    if (top < bounds.top) top = bounds.top;
+    // Horizontal: align right edge to button right edge
+    let left = btnRect.right - panelW;
+    if (left < bounds.left) left = bounds.left;
+    if (left + panelW > bounds.right) left = bounds.right - panelW;
+    panel.style.top = top + 'px';
+    panel.style.left = left + 'px';
+    setTimeout(() => {
+      const closer = (e) => { if (panel.contains(e.target) || e.target === triggerBtn) return; panel.remove(); triggerBtn._ldpEmojiPanel = null; document.removeEventListener('mousedown', closer, true); };
+      document.addEventListener('mousedown', closer, true);
+    }, 0);
+    const si = panel.querySelector('.ldp-emoji-search input');
+    if (si) setTimeout(() => si.focus(), 50);
   }
 
   /* ============ 2.6 Boosts 气泡渲染辅助 ============ */
@@ -812,6 +1074,7 @@
       <div class="ldp-boost-input-wrap">
         <input type="text" class="ldp-boost-input" maxlength="50"
           placeholder="Boost ${esc(p.username)}… (最多16字符)">
+        <button class="ldp-emoji-btn ldp-boost-emoji" type="button" title="表情">${EMOJI_BTN_ICON}</button>
         <button class="ldp-boost-submit" title="发送">✓</button>
         <button class="ldp-boost-cancel" title="取消">×</button>
       </div>
@@ -936,9 +1199,11 @@
     const username = (post.querySelector(':scope > .ldp-post-head .ldp-user')?.textContent || '').replace(/^@/, '');
     box = document.createElement('div');
     box.className = 'ldp-replybox';
-    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (最少16个字符)"></textarea><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
+    box.innerHTML = `<textarea placeholder="回复 @${esc(username)} … (最少16个字符)"></textarea><button class="ldp-emoji-btn ldp-reply-emoji" type="button" title="表情">${EMOJI_BTN_ICON}</button><button class="ldp-send">发送</button><span class="ldp-reply-tip">✓ 已发送</span>`;
     const textarea = box.querySelector('textarea');
     bindPasteEvent(textarea);
+    const emojiBtn = box.querySelector('.ldp-reply-emoji');
+    emojiBtn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); toggleEmojiPanel(emojiBtn, textarea); });
     const actions = post.querySelector(':scope > .ldp-actions');
     if (actions) actions.after(box);
     else post.appendChild(box);
@@ -1153,6 +1418,16 @@
       }
 
       const boostBtn = e.target.closest('.ldp-boost-btn');
+      const boostEmojiBtn = e.target.closest('.ldp-boost-emoji');
+      if (boostEmojiBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = boostEmojiBtn.closest('.ldp-boost-input-wrap');
+        const input = wrap && wrap.querySelector('.ldp-boost-input');
+        if (input) toggleEmojiPanel(boostEmojiBtn, input);
+        return;
+      }
+
       if (boostBtn && !boostBtn.disabled) {
         const wrap = postNode.querySelector(':scope > .ldp-boost-input-wrap');
         if (!wrap) return;
