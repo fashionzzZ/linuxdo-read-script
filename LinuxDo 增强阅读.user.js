@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.2
+// @version      1.8.3
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -160,6 +160,7 @@
     .ldp-floor{font-size:12px;opacity:.5;margin-left:auto;
       padding-left:8px;white-space:nowrap;}
     .ldp-content img{max-width:100%;height:auto;cursor:zoom-in;border-radius:4px;}
+    .ldp-content .ldp-deleted{color:var(--primary-medium,#888);}
     .ldp-content .video-placeholder-container{max-width:100%;overflow:hidden;border-radius:6px;}
     .ldp-content .video-placeholder-container[data-video-src]:not(.ldp-video-ready){
       position:relative;background:#000;cursor:pointer;}
@@ -1021,36 +1022,23 @@
    */
   function renderPost(p, isReply, ctx, depth = 0) {
     // 检测已删除的评论（缺少作者信息或内容）
-    const isDeleted = !p.username || !p.cooked || p.deleted_at;
-
-    if (isDeleted) {
-      // 渲染已删除评论的占位符
-      const node = document.createElement('div');
-      node.className = 'ldp-post ldp-reply';
-      node.dataset.postId = p.id;
-      node.dataset.postNumber = p.post_number;
-      node.style.opacity = '0.5';
-      node.innerHTML = `
-        <div class="ldp-post-head">
-          <span class="ldp-author" style="opacity: 0.5;">（帖子已被作者删除）</span>
-          <span class="ldp-floor">#${p.post_number}</span>
-        </div>
-        <div class="ldp-children"></div>
-      `;
-      return node;
-    }
+    const isDeleted = !p.username || !p.cooked || p.deleted_at || p.user_deleted === true;
 
     // 正常评论的渲染逻辑
+    const username = p.username || '';
+    const displayName = p.name || p.display_name || p.display_username || username;
     const avatar = p.avatar_template
         ? BASE + p.avatar_template.replace('{size}', '48') : '';
     const { count, acted, canAct } = likeInfo(p);
-    const isOP = ctx.op && p.username === ctx.op;
-    const isME = ME_USERNAME && p.username === ME_USERNAME;
+    const isOP = ctx.op && username === ctx.op;
+    const isME = ME_USERNAME && username === ME_USERNAME;
     const time = fmtTime(p.created_at);
     const profileUrl = userProfileUrl(p.username);
-    const profileLabel = userProfileLabel(p.username, p.name || p.display_name);
+    const profileLabel = userProfileLabel(username, displayName);
 
-    let cooked = p.cooked || '';
+    let cooked = isDeleted
+        ? '<p class="ldp-deleted">（帖子已被作者删除）</p>'
+        : p.cooked || '';
     cooked = (() => {
       const tmp = document.createElement('div');
       tmp.innerHTML = cooked;
@@ -1065,8 +1053,27 @@
       return tmp.innerHTML;
     })();
 
-    const boostsHtml = renderBoosts(p.boosts || []);
-    const canBoost = p.can_boost === true;
+    const boostsHtml = isDeleted ? '' : renderBoosts(p.boosts || []);
+    const canBoost = !isDeleted && p.can_boost === true;
+    const canDelete = !isDeleted && isME && p.post_number !== 1;
+    const actionsHtml = isDeleted ? '' : `
+      <div class="ldp-actions">
+        <button class="ldp-btn ldp-like ${acted ? 'liked' : ''}"
+          data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'} title="点赞">
+            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:middle;">${ICONS.like}</svg>
+          <span class="ldp-like-count">${count}</span>
+        </button>
+        <button class="ldp-btn ldp-replybtn" title="回复">
+            <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
+        </button>
+        <button class="ldp-btn ldp-boost-btn" ${canBoost ? '' : 'disabled'} title="Boost">
+            <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.boost}</svg>
+        </button>
+        ${canDelete ? `<button class="ldp-btn ldp-deletebtn" title="删除">
+          <svg class="fa d-icon d-icon-trash-can svg-icon fa-width-auto svg-string" width="1em" height="1em" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><use href="#trash-can"></use></svg>
+        </button>` : ''}
+      </div>
+    `;
 
     const node = document.createElement('div');
     node.className = 'ldp-post' + (depth > 0 ? ' ldp-reply' : '');
@@ -1076,8 +1083,8 @@
       <div class="ldp-post-head">
         ${profileUrl ? `<a class="ldp-user-link" href="${profileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(profileLabel)}">` : ''}
         ${avatar ? `<img class="ldp-avatar" src="${avatar}" alt="" loading="lazy" decoding="async">` : ''}
-        <span class="ldp-author">${esc(p.name || p.username)}</span>
-        <span class="ldp-user">@${esc(p.username)}</span>
+        ${displayName ? `<span class="ldp-author">${esc(displayName)}</span>` : ''}
+        ${username ? `<span class="ldp-user">@${esc(username)}</span>` : ''}
         ${profileUrl ? '</a>' : ''}
         ${p.trust_level != null ? `<span class="ldp-level">Lv.${p.trust_level}</span>` : ''}
         ${isOP ? '<span class="ldp-op">OP</span>' : ''}
@@ -1094,19 +1101,7 @@
         <button class="ldp-boost-submit" title="发送">✓</button>
         <button class="ldp-boost-cancel" title="取消">×</button>
       </div>
-      <div class="ldp-actions">
-        <button class="ldp-btn ldp-like ${acted ? 'liked' : ''}"
-          data-acted="${acted ? '1' : '0'}" ${canAct || acted ? '' : 'disabled'} title="点赞">
-            <svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;vertical-align:middle;">${ICONS.like}</svg>
-          <span class="ldp-like-count">${count}</span>
-        </button>
-        <button class="ldp-btn ldp-replybtn" title="回复">
-            <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.reply}</svg>
-        </button>
-        <button class="ldp-btn ldp-boost-btn" ${canBoost ? '' : 'disabled'} title="Boost">
-          <svg viewBox="0 0 1024 1024" style="width:12px;height:12px;fill:currentColor;vertical-align:middle;">${ICONS.boost}</svg>
-        </button>
-      </div>
+      ${actionsHtml}
       <div class="ldp-children"></div>
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
@@ -1114,6 +1109,22 @@
     prepareSpoilers(node.querySelector('.ldp-content'));
     renderMath(node);
     return node;
+  }
+
+  function markPostDeleted(postNode, ctx) {
+    const postNumber = Number(postNode.dataset.postNumber);
+    const post = ctx.postMap?.get(postNumber) || idToPost.get(Number(postNode.dataset.postId));
+    if (post) {
+      post.deleted_at = post.deleted_at || new Date().toISOString();
+      post.user_deleted = true;
+    }
+
+    const content = postNode.querySelector(':scope > .ldp-content');
+    if (content) content.innerHTML = '<p class="ldp-deleted">（帖子已被作者删除）</p>';
+    postNode.style.opacity = '';
+    postNode.querySelectorAll(
+      ':scope > .ldp-boosts-list, :scope > .ldp-boost-input-wrap, :scope > .ldp-actions'
+    ).forEach((el) => el.remove());
   }
 
   /* ============ 7.1 公式渲染（KaTeX） ============ */
@@ -1703,6 +1714,21 @@
         const opening = !wrap.classList.contains('open');
         wrap.classList.toggle('open', opening);
         if (opening) wrap.querySelector('.ldp-boost-input').focus();
+        return;
+      }
+
+      const deleteBtn = e.target.closest('.ldp-deletebtn');
+      if (deleteBtn && !deleteBtn.disabled) {
+        deleteBtn.disabled = true;
+        try {
+          await apiSend(`${BASE}/posts/${postId}`, 'DELETE', {
+            context: `/t/topic/${ctx.topicId}/${postNumber}`,
+          });
+          markPostDeleted(postNode, ctx);
+        } catch (err) {
+          alert('删除失败：' + err.message);
+          deleteBtn.disabled = false;
+        }
         return;
       }
 
@@ -2503,6 +2529,7 @@
               `${anchorData.posts_count} 帖 · ${anchorData.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
           updateCommentsHeader(ctx);
 
+          await mePromise;
           // 渲染 1 楼
           const opNode = renderPost(opPost, false, ctx, 0);
           ctx.topicEl.appendChild(opNode);
@@ -2738,7 +2765,6 @@
           alert('加载失败：' + e.message);
         }
 
-        await mePromise;
         return;  // 跳转场景直接返回，不加载完整嵌套树
       }
 
@@ -2795,6 +2821,7 @@
             `${topicMeta?.posts_count || 1} 帖 · 楼主 @${ctx.op || '?'}`;
         updateCommentsHeader(ctx);
 
+        await mePromise;
         // 渲染 1 楼
         const opNode = renderPost(opPost, false, ctx, 0);
         ctx.topicEl.appendChild(opNode);
@@ -2926,9 +2953,6 @@
       } else {
         throw new Error('服务器返回数据格式异常');
       }
-
-      // 等待 ME 加载完成
-      await mePromise;
 
     } catch (err) {
       if (err.name === 'AbortError') {

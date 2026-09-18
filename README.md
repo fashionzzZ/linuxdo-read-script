@@ -5,7 +5,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、原图灯箱一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.8.2-blue)
+![version](https://img.shields.io/badge/version-1.8.3-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -22,6 +22,7 @@
 - **底部工具栏**：弹窗底部设有固定工具栏（点赞 / 回复 / Boost / 收藏 / 打开原帖），滚动到任意位置都能对楼主帖快速互动。
 - **点赞 / 取消赞**：显示点赞数，支持一键点赞与取消（取消受 Discourse 时间窗限制）。
 - **楼内回复**：可对任意楼层回复，发送后即时插入为该楼的楼中楼子节点。
+- **删除自己的回复**：可删除自己发布的回复楼层，删除后保留楼层占位与子回复。
 - **Boost**：对楼层发送简短文字 Boost（最多 16 字符），支持撤回自己发送的 Boost。
 - **整帖收藏 / 取消收藏**：调用 Discourse 书签接口。
 - **原图灯箱**：点击正文图片以原图地址（外层 `a.lightbox` 的 `href`）打开灯箱；点图片、点空白、按 Esc、点右上角 × 均可关闭。
@@ -46,6 +47,7 @@
 | 点击图片 | 原图灯箱查看，点击图片/空白、Esc 或右上角 × 关闭 |
 | ♥ 按钮 | 点赞 / 取消赞 |
 | ↩ 回复 | 展开回复框，发送后插入楼中楼；支持插入「隐藏详细信息」和「模糊剧透」模板 |
+| 🗑 删除 | 删除自己发布的回复，删除后显示占位 |
 | Boost 按钮 | 对该楼发送/撤回一条简短文字 Boost |
 | 底部悬浮工具栏 | 随时对楼主帖点赞、回复、Boost、收藏、打开原帖，无需滚回顶部 |
 | ☆ 收藏本帖 | 收藏 / 取消收藏整帖 |
@@ -58,7 +60,7 @@
 - **双向续加载**：滚动到顶部/底部哨兵时分别向上/向下再取一批（`PAGE_SIZE` 条），到边界后标记完成并展示"已加载全部评论"提示；向上加载采用整体位移补偿，不会造成视觉跳动。
 - **楼中楼**：以楼层号建立映射，按 `reply_to_post_number` 挂到父节点；跨分块未就绪的父级先暂存，块加载完后回扫归位；子回复默认只展示 `SUB_REPLY_INITIAL_SIZE` 条，点击展开后再分批（`SUB_REPLY_PAGE_SIZE`）通过 `GET /posts/{id}/replies.json` 懒加载。
 - **已读上报**：用 `IntersectionObserver` 记录楼层进入/离开视口的时间戳累计停留时长，达阈值后通过 `POST /topics/timings`（带 `topic_time`、`timings[楼层]=毫秒`）增量上报；切后台自动暂停计时，避免虚增。
-- **交互接口**：点赞 `POST/DELETE /post_actions`、回复 `POST /posts`、收藏 `POST/DELETE /bookmarks`、Boost `POST /discourse-boosts/posts/{id}/boosts` 与 `DELETE /discourse-boosts/boosts/{id}`，均携带 `X-CSRF-Token`。
+- **交互接口**：点赞 `POST/DELETE /post_actions`、回复 `POST /posts`、删除回复 `DELETE /posts/{id}`、收藏 `POST/DELETE /bookmarks`、Boost `POST /discourse-boosts/posts/{id}/boosts` 与 `DELETE /discourse-boosts/boosts/{id}`，均携带 `X-CSRF-Token`。
 
 ## ⚠️ 风控与使用须知
 
