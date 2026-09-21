@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.3
+// @version      1.8.4
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -187,6 +187,39 @@
     .ldp-content .ldp-spoiler.ldp-spoiler-expanded{cursor:default;}
     .ldp-content pre{overflow:auto;background:var(--primary-very-low,#f6f6f6);
       padding:10px;border-radius:6px;}
+    .ldp-content .ldp-poll{display:grid;gap:10px;margin:12px 0;padding:12px;
+      border:1px solid var(--primary-low,#ddd);border-radius:8px;
+      background:var(--primary-very-low,#fafafa);}
+    .ldp-poll-title{margin:0;font-size:15px;font-weight:700;}
+    .ldp-poll-meta{font-size:12px;color:var(--primary-medium,#777);}
+    .ldp-poll-options{display:grid;gap:8px;}
+    .ldp-poll-option{position:relative;overflow:hidden;width:100%;
+      display:flex;flex-direction:column;gap:6px;padding:10px 12px;
+      border:1px solid var(--primary-low,#ddd);border-radius:8px;
+      background:var(--secondary,#fff);color:inherit;font:inherit;
+      text-align:left;cursor:pointer;}
+    .ldp-poll-option[aria-pressed="true"]{
+      border-color:var(--tertiary,#08c);background:rgba(8,132,255,.08);}
+    .ldp-poll-option:disabled{cursor:default;opacity:.65;}
+    .ldp-poll-option-content{position:relative;z-index:1;display:flex;
+      align-items:baseline;justify-content:space-between;gap:12px;}
+    .ldp-poll-option-html{min-width:0;overflow-wrap:anywhere;}
+    .ldp-poll-option-meta{flex:none;font-size:12px;color:var(--primary-medium,#777);}
+    .ldp-poll-bar{position:absolute;left:0;bottom:0;height:3px;
+      background:var(--tertiary,#08c);}
+    .ldp-poll-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;}
+    .ldp-poll-submit,.ldp-poll-remove{border:1px solid var(--primary-low,#ccc);
+      border-radius:6px;padding:5px 12px;background:var(--secondary,#fff);
+      color:var(--primary,#222);font:inherit;font-size:13px;cursor:pointer;}
+    .ldp-poll-submit:disabled,.ldp-poll-remove:disabled{
+      cursor:default;opacity:.5;}
+    .ldp-poll-selected-count{font-size:12px;color:var(--primary-medium,#777);}
+    .ldp-poll-status{min-height:18px;font-size:12px;color:var(--primary-medium,#777);}
+    .ldp-poll-status.ldp-poll-error{color:#d13c3c;}
+    .ldp-poll[data-loading] .ldp-poll-option,
+    .ldp-poll[data-loading] .ldp-poll-submit,
+    .ldp-poll[data-loading] .ldp-poll-remove{
+      cursor:default;opacity:.55;pointer-events:none;}
     .ldp-children{margin-left:22px;
       border-left:1px solid var(--tertiary,#08c);}
     .ldp-actions{display:flex;gap:14px;margin-top:8px;font-size:12px;align-items:center;}
@@ -437,10 +470,32 @@
       opt.body = params;
     } else if (params) {
       opt.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
-      opt.body = new URLSearchParams(params).toString();
+      const body = new URLSearchParams();
+      Object.keys(params).forEach((key) => {
+        const value = params[key];
+        if (Array.isArray(value)) {
+          value.forEach((item) => body.append(`${key}[]`, item));
+        } else {
+          body.append(key, value);
+        }
+      });
+      opt.body = body.toString();
     }
     const res = await fetch(url, opt);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
+    if (!res.ok) {
+      let message = 'HTTP ' + res.status;
+      try {
+        const data = await res.json();
+        const errors = Array.isArray(data.errors)
+            ? data.errors.map((item) =>
+                typeof item === 'string' ? item : item && item.message)
+                .filter((item) => typeof item === 'string' && item.trim())
+            : [];
+        const candidate = errors.join(' ') || data.error || data.message;
+        if (typeof candidate === 'string' && candidate.trim()) message = candidate.trim();
+      } catch (e) { /* keep the HTTP fallback when the response is not JSON */ }
+      throw new Error(message);
+    }
     return res.json().catch(() => ({}));
   }
 
@@ -982,6 +1037,321 @@
     }
   }
 
+  function isRenderablePoll(poll) {
+    if (!poll || (poll.type !== 'regular' && poll.type !== 'multiple')) return false;
+    if (!Array.isArray(poll.options) || !poll.options.length) return false;
+    return poll.options.every((option) =>
+      option && option.id != null && String(option.id) !== '' && typeof option.html === 'string');
+  }
+
+  function pollResultsVisible(poll) {
+    return Array.isArray(poll.options) && poll.options.length > 0
+        && poll.options.every((option) =>
+          option && typeof option.votes === 'number' && Number.isFinite(option.votes));
+  }
+
+  function isPollClosed(poll) {
+    if (poll.status === 'closed') return true;
+    const close = typeof poll.close === 'string' ? Date.parse(poll.close) : NaN;
+    return Number.isFinite(close) && close <= Date.now();
+  }
+
+  function canVotePoll(poll) {
+    return !isPollClosed(poll) && poll.can_vote !== false && poll.canVote !== false;
+  }
+
+  function pollBounds(poll) {
+    const optionCount = poll.options.length;
+    const minValue = Number(poll.min);
+    const maxValue = Number(poll.max);
+    const min = Number.isFinite(minValue) && minValue > 0
+        ? Math.floor(minValue) : 1;
+    const max = Number.isFinite(maxValue) && maxValue > 0
+        ? Math.min(Math.floor(maxValue), optionCount) : optionCount;
+    return { min, max };
+  }
+
+  function currentPollVotes(post, pollName) {
+    const votes = post.polls_votes && post.polls_votes[pollName];
+    return Array.isArray(votes) ? votes.map((optionId) => String(optionId)) : [];
+  }
+
+  function renderPoll(poll, post, titleHtml = '') {
+    const node = document.createElement('div');
+    const selectedVotes = currentPollVotes(post, poll.name);
+    const closed = isPollClosed(poll);
+    const canVote = canVotePoll(poll);
+    const resultsVisible = pollResultsVisible(poll);
+    const { min, max } = pollBounds(poll);
+
+    node.className = 'ldp-poll';
+    node.dataset.pollName = String(poll.name);
+    node.dataset.type = poll.type;
+    node.dataset.votable = canVote ? '1' : '0';
+    node.dataset.closed = closed ? '1' : '0';
+
+    const title = document.createElement('div');
+    title.className = 'ldp-poll-title';
+    if (titleHtml) {
+      title.innerHTML = titleHtml;
+    } else if (typeof poll.title === 'string' && poll.title) {
+      title.textContent = poll.title;
+    }
+    if (titleHtml || (typeof poll.title === 'string' && poll.title)) node.appendChild(title);
+
+    const meta = document.createElement('div');
+    const metaItems = [];
+    if (poll.type === 'multiple') metaItems.push(`多选（可选 ${min}-${max} 项）`);
+    if (closed) metaItems.push('已关闭');
+    if (resultsVisible && Number.isFinite(Number(poll.voters))) {
+      metaItems.push(`${Number(poll.voters)} 人投票`);
+    } else if (selectedVotes.length) {
+      metaItems.push('已选择');
+    }
+    meta.className = 'ldp-poll-meta';
+    meta.textContent = metaItems.join(' · ');
+    node.appendChild(meta);
+
+    const optionList = document.createElement('div');
+    optionList.className = 'ldp-poll-options';
+    poll.options.forEach((option) => {
+      const optionId = String(option.id);
+      const selected = selectedVotes.includes(optionId);
+      const voters = Number(poll.voters);
+      const percent = resultsVisible && Number.isFinite(voters) && voters > 0
+          ? Math.round((option.votes / voters) * 100) : 0;
+
+      const optionButton = document.createElement('button');
+      optionButton.type = 'button';
+      optionButton.className = 'ldp-poll-option' + (selected ? ' selected' : '');
+      optionButton.dataset.optionId = optionId;
+      optionButton.setAttribute('aria-pressed', String(selected));
+      optionButton.disabled = !canVote;
+
+      const content = document.createElement('span');
+      content.className = 'ldp-poll-option-content';
+      const optionHtml = document.createElement('span');
+      optionHtml.className = 'ldp-poll-option-html';
+      optionHtml.innerHTML = option.html;
+      content.appendChild(optionHtml);
+      if (resultsVisible) {
+        const optionMeta = document.createElement('span');
+        optionMeta.className = 'ldp-poll-option-meta';
+        optionMeta.textContent = `${option.votes} 票 · ${percent}%`;
+        content.appendChild(optionMeta);
+      }
+      optionButton.appendChild(content);
+      if (resultsVisible) {
+        const bar = document.createElement('span');
+        bar.className = 'ldp-poll-bar';
+        bar.style.width = `${percent}%`;
+        optionButton.appendChild(bar);
+      }
+      optionList.appendChild(optionButton);
+    });
+    node.appendChild(optionList);
+
+    const actions = document.createElement('div');
+    actions.className = 'ldp-poll-actions';
+    if (poll.type === 'multiple') {
+      const submit = document.createElement('button');
+      submit.type = 'button';
+      submit.className = 'ldp-poll-submit';
+      submit.textContent = selectedVotes.length ? '更新投票' : '投票';
+      submit.disabled = !canVote || selectedVotes.length < min || selectedVotes.length > max;
+      actions.appendChild(submit);
+
+      const selectedCount = document.createElement('span');
+      selectedCount.className = 'ldp-poll-selected-count';
+      selectedCount.textContent = `已选 ${selectedVotes.length}/${max} 项`;
+      actions.appendChild(selectedCount);
+    }
+    if (selectedVotes.length && canVote) {
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'ldp-poll-remove';
+      remove.textContent = '撤销投票';
+      remove.disabled = !canVote;
+      actions.appendChild(remove);
+    }
+    node.appendChild(actions);
+
+    const status = document.createElement('div');
+    status.className = 'ldp-poll-status';
+    node.appendChild(status);
+    return node;
+  }
+
+  function renderPolls(content, post) {
+    if (!content || !Array.isArray(post.polls)) return;
+    content.querySelectorAll('.poll').forEach((placeholder) => {
+      const pollName = placeholder.dataset.pollName || 'poll';
+      const poll = post.polls.find((item) => item && item.name === pollName);
+      if (!isRenderablePoll(poll)) return;
+      const titleNode = placeholder.querySelector('.poll-title');
+      placeholder.replaceWith(renderPoll(poll, post, titleNode ? titleNode.innerHTML : ''));
+    });
+  }
+
+  function updateMultiplePollState(pollNode, poll) {
+    const selectedCount = pollNode.querySelectorAll('.ldp-poll-option[aria-pressed="true"]').length;
+    const { min, max } = pollBounds(poll);
+    const submit = pollNode.querySelector('.ldp-poll-submit');
+    if (submit) {
+      submit.disabled = pollNode.dataset.votable !== '1'
+          || selectedCount < min || selectedCount > max;
+    }
+    const count = pollNode.querySelector('.ldp-poll-selected-count');
+    if (count) count.textContent = `已选 ${selectedCount}/${max} 项`;
+  }
+
+  function setPollLoading(pollNode, text) {
+    pollNode.dataset.loading = 'true';
+    pollNode.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+    const status = pollNode.querySelector('.ldp-poll-status');
+    if (status) {
+      status.classList.remove('ldp-poll-error');
+      status.textContent = text;
+    }
+  }
+
+  function finishPollLoading(pollNode, poll, errorMessage) {
+    delete pollNode.dataset.loading;
+    const canVote = pollNode.dataset.votable === '1';
+    pollNode.querySelectorAll('.ldp-poll-option, .ldp-poll-remove')
+        .forEach((button) => { button.disabled = !canVote; });
+    if (poll && poll.type === 'multiple') updateMultiplePollState(pollNode, poll);
+    const status = pollNode.querySelector('.ldp-poll-status');
+    if (status) {
+      status.classList.toggle('ldp-poll-error', !!errorMessage);
+      status.textContent = errorMessage ? `投票失败：${errorMessage}` : '';
+    }
+  }
+
+  function showPollStatus(pollNode, text, isError) {
+    const status = pollNode.querySelector('.ldp-poll-status');
+    if (!status) return;
+    status.classList.toggle('ldp-poll-error', !!isError);
+    status.textContent = text;
+  }
+
+  function findPostForNode(postNode, ctx) {
+    const postNumber = Number(postNode.dataset.postNumber);
+    return ctx.postMap?.get(postNumber) || idToPost.get(Number(postNode.dataset.postId));
+  }
+
+  function findPollForNode(post, pollNode) {
+    const pollName = pollNode.dataset.pollName;
+    return (post.polls || []).find((poll) => poll && poll.name === pollName) || null;
+  }
+
+  function responseVoteOptions(vote) {
+    const options = Array.isArray(vote) ? vote : vote && vote.options;
+    return Array.isArray(options) ? options.map((optionId) => String(optionId)) : null;
+  }
+
+  function updatePostPoll(post, poll, response, removeVote) {
+    const polls = Array.isArray(post.polls) ? post.polls : (post.polls = []);
+    const index = polls.indexOf(poll);
+    const nextPoll = Object.assign({}, poll, response.poll);
+    if (index >= 0) polls[index] = nextPoll;
+    else polls.push(nextPoll);
+
+    const votes = post.polls_votes || (post.polls_votes = {});
+    if (removeVote) {
+      delete votes[poll.name];
+    } else {
+      votes[poll.name] = responseVoteOptions(response.vote) || [];
+    }
+    return nextPoll;
+  }
+
+  async function requestPollVote(pollNode, post, poll, optionIds, removeVote) {
+    setPollLoading(pollNode, removeVote ? '取消投票中…' : '投票中…');
+    try {
+      const params = removeVote
+          ? { post_id: post.id, poll_name: poll.name }
+          : { post_id: post.id, poll_name: poll.name, options: optionIds };
+      const data = await apiSend(
+          `${BASE}/polls/vote`,
+          removeVote ? 'DELETE' : 'PUT',
+          params
+      );
+      if (!data || !data.poll) throw new Error('响应缺少投票数据');
+      if (!removeVote && !responseVoteOptions(data.vote)) {
+        throw new Error('响应缺少投票选择');
+      }
+
+      const titleNode = pollNode.querySelector('.ldp-poll-title');
+      const nextPoll = updatePostPoll(post, poll, data, removeVote);
+      pollNode.replaceWith(renderPoll(
+          nextPoll,
+          post,
+          titleNode ? titleNode.innerHTML : ''
+      ));
+    } catch (err) {
+      finishPollLoading(pollNode, poll, err.message);
+    }
+  }
+
+  async function handlePollControl(control, ctx) {
+    const pollNode = control.closest('.ldp-poll');
+    const postNode = control.closest('.ldp-post');
+    if (!pollNode || !postNode) return;
+
+    const post = findPostForNode(postNode, ctx);
+    if (!post) {
+      showPollStatus(pollNode, '投票失败：未找到帖子数据', true);
+      return;
+    }
+    const poll = findPollForNode(post, pollNode);
+    if (!poll) {
+      showPollStatus(pollNode, '投票失败：未找到投票数据', true);
+      return;
+    }
+
+    if (control.classList.contains('ldp-poll-option')) {
+      if (poll.type === 'multiple') {
+        const selected = control.getAttribute('aria-pressed') === 'true';
+        const selectedCount = pollNode
+            .querySelectorAll('.ldp-poll-option[aria-pressed="true"]').length;
+        const { max } = pollBounds(poll);
+        if (!selected && selectedCount >= max) {
+          showPollStatus(pollNode, `最多可选 ${max} 项`, false);
+          return;
+        }
+        control.classList.toggle('selected', !selected);
+        control.setAttribute('aria-pressed', String(!selected));
+        showPollStatus(pollNode, '', false);
+        updateMultiplePollState(pollNode, poll);
+        return;
+      }
+
+      const optionId = control.dataset.optionId;
+      const currentVotes = currentPollVotes(post, poll.name);
+      await requestPollVote(
+          pollNode,
+          post,
+          poll,
+          currentVotes.includes(optionId) ? null : [optionId],
+          currentVotes.includes(optionId)
+      );
+      return;
+    }
+
+    if (control.classList.contains('ldp-poll-submit')) {
+      const optionIds = Array.from(
+          pollNode.querySelectorAll('.ldp-poll-option[aria-pressed="true"]')
+      ).map((option) => option.dataset.optionId);
+      await requestPollVote(pollNode, post, poll, optionIds, false);
+      return;
+    }
+
+    if (control.classList.contains('ldp-poll-remove')) {
+      await requestPollVote(pollNode, post, poll, null, true);
+    }
+  }
+
   /* ============ 7. 楼层归位（已废弃，保留用于扁平流降级） ============ */
   function attachPost(p, ctx) {
     if (ctx.postMap) ctx.postMap.set(p.post_number, p);
@@ -1106,6 +1476,7 @@
       <div class="ldp-sub-loading">加载楼中楼中…</div>
       <div class="ldp-sub-actions"><button class="ldp-btn ldp-load-more-replies">展示更多回复 ↓</button></div>
     `;
+    renderPolls(node.querySelector('.ldp-content'), p);
     prepareSpoilers(node.querySelector('.ldp-content'));
     renderMath(node);
     return node;
@@ -1655,6 +2026,17 @@
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') return;
 
+      const pollControl = e.target.closest(
+          '.ldp-poll-option, .ldp-poll-submit, .ldp-poll-remove'
+      );
+      if (pollControl) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pollControl.disabled || pollControl.closest('.ldp-poll')?.hasAttribute('data-loading')) return;
+        await handlePollControl(pollControl, ctx);
+        return;
+      }
+
       const img = e.target.closest('.ldp-content img');
       if (img) { e.preventDefault(); e.stopPropagation(); openLightbox(resolveOriginalSrc(img)); return; }
 
@@ -1818,7 +2200,7 @@
           const postData = data && data.post ? data.post : data;
           if (postData && postData.cooked) {
             const isTopLevel = postNumber === 1;
-            const newNode = renderPost({
+            const newPost = {
               id: postData.id,
               post_number: postData.post_number,
               username: postData.username || ME_USERNAME,
@@ -1827,10 +2209,15 @@
               cooked: postData.cooked,
               created_at: postData.created_at || new Date().toISOString(),
               reply_to_post_number: postNumber,
+              polls: postData.polls,
+              polls_votes: postData.polls_votes,
               actions_summary: [],
               boosts: [],
               can_boost: true,
-            }, !isTopLevel, ctx, isTopLevel ? 0 : 1);
+            };
+            const newNode = renderPost(
+                newPost, !isTopLevel, ctx, isTopLevel ? 0 : 1
+            );
             newNode.classList.add('ldp-flash');
             if (isTopLevel) {
               ctx.commentsEl.prepend(newNode);
@@ -1844,6 +2231,8 @@
               }
             }
             ctx.nodeMap.set(postData.post_number, newNode);
+            ctx.postMap.set(newPost.post_number, newPost);
+            idToPost.set(newPost.id, newPost);
             ctx.tracker.observe(newNode);
             ctx.totalComments = (ctx.totalComments || 0) + 1;
             updateCommentsHeader(ctx);
