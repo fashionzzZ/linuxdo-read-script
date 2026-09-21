@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index for the single-file userscript UI change."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Poll block rendering and button component conventions."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Server poll state, local staged selections, and refresh rules."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Frontend quality and review expectations."}

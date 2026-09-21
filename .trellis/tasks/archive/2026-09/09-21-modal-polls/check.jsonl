@@ -1,0 +1,4 @@
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index for validating the userscript UI change."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Check poll UI structure and interaction conventions."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Check poll result state and local selection behavior."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Check code quality and validation requirements."}
