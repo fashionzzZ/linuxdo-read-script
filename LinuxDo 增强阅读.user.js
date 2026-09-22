@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.4
+// @version      1.8.5
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -468,6 +468,9 @@
     };
     if (params instanceof FormData) {
       opt.body = params;
+    } else if (params instanceof URLSearchParams) {
+      opt.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
+      opt.body = params.toString();
     } else if (params) {
       opt.headers['Content-Type'] = 'application/x-www-form-urlencoded; charset=UTF-8';
       const body = new URLSearchParams();
@@ -1963,6 +1966,7 @@
       const actionsEl = postNode.querySelector(':scope > .ldp-sub-actions');
       if (actionsEl) actionsEl.style.display = 'none';
       if (button) button.remove();
+      postNode.dataset.repliesLoaded = '1';
       return children;
     } catch (e) {
       if (button) {
@@ -2763,6 +2767,7 @@
     const close = () => {
       abortController.abort(); // 取消所有进行中的请求
       tracker.stop();
+      ctx.repliesIO?.disconnect();
       floorNavigator.destroy();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
@@ -2964,7 +2969,11 @@
 
           // 初始化 pending 数组（用于构建楼中楼）
           ctx.pending = [];
-          ctx.repliesIO = { observe: () => {}, disconnect: () => {} };  // 兼容占位
+          const lazyReplyNodes = new Set();
+          ctx.repliesIO = {
+            observe: (node) => { if (node) lazyReplyNodes.add(node); },
+            disconnect: () => {},
+          };
 
           // 保存完整的帖子流（用于双向加载）
           const streamFull = anchorData.post_stream.stream || [];
@@ -3148,6 +3157,35 @@
           // locatePost 已等待滚动真正停止，可以安全开放双向加载。
           isAnchoring = false;
 
+          const repliesObserver = new IntersectionObserver((entries, observer) => {
+            entries.forEach((entry) => {
+              if (!entry.isIntersecting) return;
+              const node = entry.target;
+              observer.unobserve(node);
+              if (node.dataset.repliesLoaded === '1') return;
+
+              const postId = Number(node.dataset.postId);
+              const postNumber = Number(node.dataset.postNumber);
+              const loadingEl = node.querySelector(':scope > .ldp-sub-loading');
+              if (loadingEl) loadingEl.style.display = 'block';
+
+              loadAllChildren(postId, postNumber, null, ctx, true)
+                .catch((err) => {
+                  console.error(`[LinuxDo 增强阅读] 楼层 #${postNumber} 楼中楼自动加载失败:`, err);
+                  const actionsEl = node.querySelector(':scope > .ldp-sub-actions');
+                  if (actionsEl) actionsEl.style.display = 'block';
+                })
+                .finally(() => {
+                  if (loadingEl) loadingEl.style.display = 'none';
+                });
+            });
+          }, { root: body, rootMargin: '300px' });
+          ctx.repliesIO = repliesObserver;
+          lazyReplyNodes.forEach((node) => {
+            if (node.isConnected) repliesObserver.observe(node);
+          });
+          lazyReplyNodes.clear();
+
           showBottomTip();
 
         } catch (e) {
@@ -3194,7 +3232,9 @@
           },
           details: {
             created_by: { username: opPost.username }
-          }
+          },
+          bookmarked: topicMeta?.bookmarked,
+          bookmark_id: topicMeta?.bookmark_id
         };
 
         ctx.op = opPost.username;
