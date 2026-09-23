@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.6
+// @version      1.8.7
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -822,8 +822,13 @@
         const start = inputEl.selectionStart || 0;
         const end = inputEl.selectionEnd || 0;
         const val = inputEl.value;
-        inputEl.value = val.substring(0, start) + code + val.substring(end);
-        inputEl.selectionStart = inputEl.selectionEnd = start + code.length;
+        const before = val.substring(0, start);
+        const prev = before.slice(-1);
+        const insertion = prev && !/[\s\u200b\p{P}]/u.test(prev)
+          ? ' ' + code
+          : code;
+        inputEl.value = before + insertion + val.substring(end);
+        inputEl.selectionStart = inputEl.selectionEnd = start + insertion.length;
         inputEl.focus();
       }
       panel.remove();
