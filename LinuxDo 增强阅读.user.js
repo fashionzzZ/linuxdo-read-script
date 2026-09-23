@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.5
+// @version      1.8.6
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -522,6 +522,33 @@
     let url = `${BASE}/n/-/${topicId}.json?sort=old`;
     if (page > 0) url += `&page=${page}`;
     return await fetchJSON(url);
+  }
+
+  function standardTopicToNestedTree(data) {
+    const posts = Array.isArray(data.post_stream?.posts) ? data.post_stream.posts : [];
+    const opPost = posts.find((post) => post.post_number === 1);
+    if (!opPost) return null;
+
+    // Discourse 会把私信的嵌套树接口重定向到标准话题接口。
+    // 标准接口没有树形数据，这里转为顶层扁平结构以复用现有渲染流程。
+    const roots = posts
+        .filter((post) => post !== opPost)
+        .map((post) => ({ ...post, children: [], direct_reply_count: 0 }));
+
+    return {
+      roots,
+      op_post: opPost,
+      topic: {
+        id: data.id,
+        title: data.title,
+        posts_count: data.posts_count,
+        highest_post_number: data.highest_post_number || data.posts_count || 1,
+        bookmarked: data.bookmarked,
+        bookmark_id: data.bookmark_id,
+      },
+      has_more_roots: false,
+      page: 0,
+    };
   }
 
   /**
@@ -3196,7 +3223,13 @@
       }
 
       // 正常浏览：加载嵌套树 API
-      const nestedResponse = await fetchNestedTree(topicId, 0);
+      let nestedResponse = await fetchNestedTree(topicId, 0);
+
+      if (Array.isArray(nestedResponse.post_stream?.posts)) {
+        const converted = standardTopicToNestedTree(nestedResponse);
+        if (!converted) throw new Error('服务器返回数据缺少 OP 帖子');
+        nestedResponse = converted;
+      }
 
       // 检查服务器返回的是嵌套树还是扁平流（私有话题等）
       if (nestedResponse.roots && nestedResponse.roots.length >= 0) {
