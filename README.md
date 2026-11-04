@@ -5,7 +5,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、投票、原图灯箱、公式与表情一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），定位场景按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.8.7-blue)
+![version](https://img.shields.io/badge/version-1.8.8-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -16,6 +16,7 @@
 ## 功能特性
 
 - **标题弹窗预览**：点击列表标题（含右上角用户菜单/通知面板中的话题链接）即在当前页弹窗打开，不跳转。
+- **分类与标签**：弹窗标题下方展示帖子所属分类与标签。
 - **智能定位**：首次打开从头开始；已读过的帖子自动跳转到"已读跳未读"位置（`last_read_post_number + 1`）；从通知/用户菜单点击则直达对应楼层。
 - **评论加载**：普通浏览使用嵌套树接口加载顶层回复，并支持继续加载下一页；定位/未读/指定楼层场景以目标楼层为中心双向分片加载，顶部/底部哨兵 + `IntersectionObserver` 自动续加载，向上翻页时不会引起页面跳动；到底后展示"已加载全部评论"提示。
 - **楼中楼评论**：还原嵌套回复结构，缩进展示父子关系。普通浏览从嵌套树数据渲染子回复；定位场景按 `reply_to_post_number` 组装父子关系。子回复较多时可点击"展示更多回复"拉取该楼剩余回复。

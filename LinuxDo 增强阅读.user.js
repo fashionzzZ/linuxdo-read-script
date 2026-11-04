@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.7
+// @version      1.8.8
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -42,6 +42,14 @@
     .ldp-header{display:flex;align-items:flex-start;gap:10px;padding:16px 20px;
       border-bottom:1px solid var(--primary-low,#e5e5e5);}
     .ldp-title{margin:0;font-size:18px;font-weight:700;}
+    .ldp-topic-tags{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px;}
+    .ldp-topic-tags[hidden]{display:none;}
+    .ldp-topic-category,.ldp-topic-tag{max-width:100%;padding:1px 7px;border-radius:4px;
+      font-size:11px;line-height:18px;background:var(--primary-low,#eee);
+      color:var(--primary-medium,#666);overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;}
+    .ldp-topic-category{background:rgba(8,132,255,.1);color:var(--tertiary,#08c);
+      font-weight:600;}
     .ldp-meta{font-size:12px;opacity:.7;margin-top:4px;}
     .ldp-head-btns{display:flex;gap:8px;align-items:center;}
     .ldp-close{cursor:pointer;border:none;background:transparent;font-size:22px;
@@ -541,6 +549,8 @@
       topic: {
         id: data.id,
         title: data.title,
+        category_id: data.category_id,
+        tags: data.tags,
         posts_count: data.posts_count,
         highest_post_number: data.highest_post_number || data.posts_count || 1,
         bookmarked: data.bookmarked,
@@ -2691,6 +2701,30 @@
   /* ============ 14. 弹窗主体 ============ */
   let CURRENT_OVERLAY = null;
 
+  function getTopicCategoryName(categoryId) {
+    if (!categoryId) return '';
+    const badge = document.querySelector(
+        `.badge-category[data-category-id="${categoryId}"] .badge-category__name`
+    );
+    return badge ? badge.textContent.trim() : '';
+  }
+
+  function renderTopicTaxonomy(overlay, topic) {
+    const wrap = overlay.querySelector('.ldp-topic-tags');
+    if (!wrap) return;
+    const categoryName = getTopicCategoryName(topic?.category_id);
+    const tags = Array.isArray(topic?.tags) ? topic.tags : [];
+    const parts = [];
+    if (categoryName) {
+      parts.push(`<span class="ldp-topic-category">${esc(categoryName)}</span>`);
+    }
+    tags.forEach((tag) => {
+      if (tag?.name) parts.push(`<span class="ldp-topic-tag">${esc(tag.name)}</span>`);
+    });
+    wrap.innerHTML = parts.join('');
+    wrap.hidden = !parts.length;
+  }
+
   /**
    * openModal(topicId, targetPostNumber)
    *
@@ -2718,6 +2752,7 @@
         <div class="ldp-header">
           <div style="flex:1">
             <h2 class="ldp-title"><span class="ldp-sk ldp-sk-title"></span></h2>
+            <div class="ldp-topic-tags" hidden></div>
             <div class="ldp-meta"><span class="ldp-sk ldp-sk-meta"></span></div>
           </div>
           <div class="ldp-head-btns">
@@ -2953,6 +2988,7 @@
           overlay.querySelector('.ldp-title').textContent = anchorData.title;
           overlay.querySelector('.ldp-meta').textContent =
               `${anchorData.posts_count} 帖 · ${anchorData.views || 0} 浏览 · 楼主 @${ctx.op || '?'}`;
+          renderTopicTaxonomy(overlay, anchorData);
           updateCommentsHeader(ctx);
 
           await mePromise;
@@ -3286,6 +3322,7 @@
         overlay.querySelector('.ldp-title').textContent = topicMeta?.title || `话题 #${topicId}`;
         overlay.querySelector('.ldp-meta').textContent =
             `${topicMeta?.posts_count || 1} 帖 · 楼主 @${ctx.op || '?'}`;
+        renderTopicTaxonomy(overlay, topicMeta);
         updateCommentsHeader(ctx);
 
         await mePromise;
