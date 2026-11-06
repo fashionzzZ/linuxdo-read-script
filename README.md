@@ -5,7 +5,7 @@
 > 在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、Boost、投票、原图灯箱、公式与表情一应俱全；支持智能定位（首次从头、已读跳未读、通知直达指定楼层），定位场景按需双向分片加载，向上翻时零跳动，底部固定工具栏，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 
 [![](https://img.shields.io/badge/github-repo-blue?logo=github)](https://github.com/fashionzzZ/linuxdo-read-script)
-![version](https://img.shields.io/badge/version-1.8.8-blue)
+![version](https://img.shields.io/badge/version-1.9.0-blue)
 ![platform](https://img.shields.io/badge/platform-Tampermonkey%20%7C%20Violentmonkey-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -34,6 +34,7 @@
 - **表情选择器**：支持分组、搜索、最近使用，可在回复框和 Boost 输入框中插入 `:emoji:`。
 - **粘贴上传**：在回复框粘贴文件即可上传；大图会优先尝试压缩为 WebP，并按文件类型生成图片、音频、视频或附件 Markdown。
 - **OP / ME 标识**：楼主所有楼层标注蓝色 `OP`，本人楼层标注绿色 `ME`。
+- **用户资料卡**：点击弹窗内任意楼层的头像、昵称或用户名（以及 Boost 头像）即可弹出资料卡，展示头衔、等级、简介、地区/网站、活跃与阅读信息、精选徽章，并可关注用户或跳转完整个人主页。
 - **打开原帖**：头部一键在新标签页打开帖子原始页面。
 - **已读上报**：仅对**滚动进入视口并停留足够时间**的楼层，按真实阅读节奏调用 `topics/timings` 上报，使弹窗阅读也能计入 Connect 进度。
 
@@ -48,6 +49,8 @@
 | 操作 | 效果 |
 | --- | --- |
 | 点击列表标题 | 弹窗预览该帖，自动定位到合适楼层（从头 / 已读跳未读 / 指定楼层） |
+| 点击头像 / 昵称 / 用户名 | 弹出用户资料卡，查看简介、徽章与活跃信息 |
+| 资料卡关注按钮 | 关注 / 取消关注该用户，失败时保留原状态并提示 |
 | 滚动弹窗 | 自动双向续加载后续/前序楼层，并按停留时长上报已读 |
 | 点击图片 | 原图灯箱查看，点击图片/空白、Esc 或右上角 × 关闭 |
 | ♥ 按钮 | 点赞 / 取消赞 |

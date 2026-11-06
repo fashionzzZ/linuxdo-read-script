@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinuxDo 增强阅读
 // @namespace    https://linux.do/
-// @version      1.8.8
+// @version      1.9.0
 // @license      MIT
 // @description  在 LINUX DO 列表页点击标题即可弹窗预览整帖，楼中楼展示、点赞、回复、收藏、原图灯箱一应俱全，并按真实阅读节奏上报已读进度——无需离开列表页，也无需反复返回。
 // @author       Fashion
@@ -151,8 +151,89 @@
     .ldp-user-link{display:inline-flex;align-items:center;gap:8px;color:inherit;
       text-decoration:none;min-width:0;}
     .ldp-user-link:hover{color:var(--tertiary,#08c);}
+    .ldp-overlay a.ldp-user-link:visited{color:inherit;}
+    .ldp-overlay a.ldp-user-link:visited:hover{color:var(--tertiary,#08c);}
     .ldp-user-link .ldp-avatar{transition:opacity .15s,transform .15s;}
     .ldp-user-link:hover .ldp-avatar{opacity:.82;transform:scale(1.05);}
+
+    /* 用户资料卡 */
+    .ldp-uc{position:fixed;z-index:2147483500;box-sizing:border-box;
+      width:360px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);
+      overflow:auto;background:var(--secondary,#fff);color:var(--primary,#222);
+      border:1px solid var(--primary-low,#ddd);
+      border-radius:var(--d-border-radius-large,12px);
+      box-shadow:var(--shadow-dropdown,0 8px 30px rgba(0,0,0,.22));
+      font-size:14px;line-height:1.5;text-align:left;
+      animation:ldp-uc-in .14s ease;}
+    .ldp-uc:focus{outline:none;}
+    .ldp-uc [hidden]{display:none!important;}
+    @keyframes ldp-uc-in{
+      from{opacity:0;transform:translateY(-4px);}
+      to{opacity:1;transform:none;}
+    }
+    @media (prefers-reduced-motion:reduce){.ldp-uc{animation:none;}}
+    .ldp-uc-head{display:flex;align-items:flex-start;gap:14px;padding:16px 16px 12px;}
+    .ldp-uc-avatar{width:72px;height:72px;border-radius:50%;flex:none;
+      object-fit:cover;background:var(--primary-very-low,#f2f2f2);}
+    .ldp-uc-names{flex:1;min-width:0;padding-top:3px;}
+    .ldp-uc-name{display:block;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;color:var(--primary,#222);font-size:18px;
+      font-weight:700;line-height:1.3;text-decoration:none;}
+    .ldp-uc-name:hover{color:var(--tertiary,#08c);}
+    .ldp-overlay a.ldp-uc-name:visited{color:var(--primary,#222);}
+    .ldp-overlay a.ldp-uc-name:visited:hover{color:var(--tertiary,#08c);}
+    .ldp-uc-username{display:block;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;color:var(--primary-medium,#777);font-size:13px;}
+    .ldp-uc-tags{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px;}
+    .ldp-uc-level{flex:none;padding:1px 6px;border-radius:4px;
+      background:var(--tertiary,#08c);color:#fff;font-size:11px;font-weight:700;}
+    .ldp-uc-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+      color:var(--primary-medium,#777);font-size:12px;}
+    .ldp-uc-section{padding:0 16px 12px;}
+    .ldp-uc-bio{overflow-wrap:anywhere;color:var(--primary-high,#444);font-size:13px;}
+    .ldp-uc-bio p:first-child{margin-top:0;}
+    .ldp-uc-bio p:last-child{margin-bottom:0;}
+    .ldp-uc-bio img{max-width:100%;height:auto;}
+    .ldp-uc-bio a{color:var(--tertiary,#08c);text-decoration:none;}
+    .ldp-uc-bio a:hover{text-decoration:underline;}
+    .ldp-uc-meta{display:flex;flex-wrap:wrap;gap:4px 12px;overflow-wrap:anywhere;
+      color:var(--primary-medium,#777);font-size:12px;}
+    .ldp-uc-meta a{color:var(--tertiary,#08c);text-decoration:none;}
+    .ldp-uc-meta a:hover{text-decoration:underline;}
+    .ldp-uc-stats{display:flex;gap:8px;margin:0 16px 12px;padding:9px 0;
+      border-top:1px solid var(--primary-low,#eee);
+      border-bottom:1px solid var(--primary-low,#eee);}
+    .ldp-uc-stat{flex:1;min-width:0;text-align:center;}
+    .ldp-uc-stat b{display:block;overflow:hidden;text-overflow:ellipsis;
+      white-space:nowrap;color:var(--primary,#222);font-size:13px;}
+    .ldp-uc-stat span{display:block;color:var(--primary-medium,#888);font-size:11px;}
+    .ldp-uc-badges{display:flex;flex-wrap:wrap;gap:6px;}
+    .ldp-uc-badge{display:inline-flex;align-items:center;gap:5px;max-width:100%;
+      padding:3px 8px 3px 4px;border:1px solid var(--primary-low,#e3e3e3);
+      border-radius:999px;background:var(--primary-very-low,#f2f2f2);
+      color:var(--primary,#222);font-size:11px;line-height:1.4;}
+    .ldp-uc-badge img{width:16px;height:16px;object-fit:contain;flex:none;}
+    .ldp-uc-badge span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+    .ldp-uc-loading,.ldp-uc-error{padding:0 16px 12px;font-size:12px;}
+    .ldp-uc-loading{color:var(--primary-medium,#888);}
+    .ldp-uc-error{color:var(--danger,#cc4b4b);}
+    .ldp-uc-footer{display:flex;align-items:center;gap:8px;padding:0 16px 14px;}
+    .ldp-uc-follow{display:inline-flex;align-items:center;justify-content:center;
+      margin-right:auto;padding:5px 13px;border:1px solid var(--primary-low,#ccc);
+      border-radius:6px;background:var(--secondary,#fff);color:var(--primary-high,#444);
+      font:inherit;font-size:13px;font-weight:600;line-height:1.4;cursor:pointer;}
+    .ldp-uc-follow:hover{background:var(--primary-very-low,#f2f2f2);}
+    .ldp-uc-follow:disabled{cursor:default;opacity:.55;}
+    .ldp-uc-follow-error{flex:1;min-width:0;color:var(--danger,#cc4b4b);
+      font-size:12px;line-height:1.4;text-align:right;overflow-wrap:anywhere;}
+    .ldp-uc-profile{display:inline-flex;align-items:center;justify-content:center;
+      padding:6px 14px;border:1px solid var(--tertiary,#08c);border-radius:6px;
+      background:var(--tertiary,#08c);color:#fff;font-size:13px;
+      font-weight:600;text-decoration:none;}
+    .ldp-uc-profile:hover{filter:brightness(1.06);}
+    .ldp-overlay a.ldp-uc-profile:visited{color:#fff;}
+    .ldp-overlay a.ldp-uc-profile:visited:hover{color:#fff;}
+
     .ldp-boost-avatar-link{display:inline-flex;align-items:center;flex:none;
       border-radius:50%;line-height:0;}
     .ldp-boost-avatar-link:hover .ldp-b-avatar{opacity:.82;transform:scale(1.08);}
@@ -886,15 +967,490 @@
           ? BASE + b.user.avatar_template.replace('{size}', '36') : '';
       const bProfileUrl = userProfileUrl(b.user && b.user.username);
       const bProfileLabel = userProfileLabel(b.user && b.user.username, b.user && (b.user.name || b.user.display_name));
+      const bUsername = (b.user && b.user.username) || '';
+      const bCardName = String(
+          (b.user && (b.user.name || b.user.display_name)) || bUsername || ''
+      );
+      const bCardAttrs = bUsername
+          ? ` data-username="${escAttr(bUsername)}" data-name="${escAttr(bCardName)}"`
+          : '';
       const canDel = !!b.can_delete;
       return `<div class="ldp-boost-bubble" data-boost-id="${b.id}">` +
           (bAvatar ? (bProfileUrl
-            ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"><img class="ldp-b-avatar" src="${bAvatar}" alt=""></a>`
-            : `<img class="ldp-b-avatar" src="${bAvatar}" alt="">`) : '') +
+            ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"${bCardAttrs}><img class="ldp-b-avatar" src="${bAvatar}" alt=""${bCardAttrs}></a>`
+            : `<img class="ldp-b-avatar" src="${bAvatar}" alt=""${bCardAttrs}>`) : '') +
           `<p>${b.cooked || ''}</p>` +
           (canDel ? `<button class="ldp-boost-del" title="删除此Boost">×</button>` : '') +
           `</div>`;
     }).join('');
+  }
+
+  /* ============ 2.7 用户资料卡 ============ */
+  const userCardCache = new Map();
+  let CURRENT_USER_CARD = null;
+
+  function resolveUserCardAvatar(template, size = 96) {
+    if (typeof template !== 'string' || !template.trim()) return '';
+    const value = template.trim().replace('{size}', String(size));
+    if (/^https?:\/\//i.test(value)) return value;
+    if (value.startsWith('//')) return 'https:' + value;
+    return value.startsWith('/') ? BASE + value : BASE + '/' + value;
+  }
+
+  function resolveUserCardAsset(url) {
+    if (typeof url !== 'string' || !url.trim()) return '';
+    const value = url.trim();
+    if (/^https?:\/\//i.test(value)) return value;
+    if (value.startsWith('//')) return 'https:' + value;
+    return value.startsWith('/') ? BASE + value : BASE + '/' + value;
+  }
+
+  function safeWebsiteUrl(url) {
+    if (typeof url !== 'string' || !/^https?:\/\//i.test(url.trim())) return '';
+    try { return new URL(url.trim()).href; } catch { return ''; }
+  }
+
+  function fmtMonth(iso) {
+    if (!iso) return '';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  function fmtReadDuration(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value <= 0) return '';
+    if (value < 3600) return `${Math.max(1, Math.round(value / 60))} 分钟`;
+    const hours = Math.round(value / 3600);
+    if (hours < 48) return `${hours} 小时`;
+    return `${Math.round(hours / 24)} 天`;
+  }
+
+  function loadUserCard(username) {
+    if (!userCardCache.has(username)) {
+      const request = fetchJSON(`${BASE}/u/${encodeURIComponent(username)}/card.json`)
+          .then((data) => {
+            const user = data && (data.user || data);
+            if (!user || typeof user !== 'object') throw new Error('用户资料为空');
+            if (data && data.user) {
+              if ((!Array.isArray(user.user_badges) || !user.user_badges.length)
+                  && Array.isArray(data.user_badges)) {
+                user.user_badges = data.user_badges;
+              }
+              if ((!Array.isArray(user.badges) || !user.badges.length)
+                  && Array.isArray(data.badges)) {
+                user.badges = data.badges;
+              }
+            }
+            return user;
+          })
+          .catch((err) => {
+            userCardCache.delete(username);
+            throw err;
+          });
+      userCardCache.set(username, request);
+    }
+    return userCardCache.get(username);
+  }
+
+  function collectUserCardBadges(data) {
+    const userBadges = Array.isArray(data.user_badges) ? data.user_badges : [];
+    const badgeDefs = Array.isArray(data.badges) ? data.badges : [];
+    const badgeById = new Map();
+    badgeDefs.forEach((badge) => {
+      if (badge && badge.id != null) badgeById.set(String(badge.id), badge);
+    });
+    userBadges.forEach((userBadge) => {
+      if (userBadge && userBadge.badge && userBadge.badge.id != null) {
+        badgeById.set(String(userBadge.badge.id), userBadge.badge);
+      }
+    });
+
+    const result = [];
+    const seen = new Set();
+    const addBadge = (badge) => {
+      if (!badge || (!badge.name && badge.id == null)) return;
+      const key = badge.id != null ? `id:${badge.id}` : `name:${badge.name}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(badge);
+    };
+    const addUserBadge = (userBadge) => {
+      if (!userBadge) return;
+      const badgeId = userBadge.badge_id != null
+          ? userBadge.badge_id
+          : (userBadge.badge && userBadge.badge.id);
+      const badge = badgeId != null ? badgeById.get(String(badgeId)) : null;
+      if (badge) addBadge(badge);
+      else if (userBadge.badge) addBadge(userBadge.badge);
+      else if (userBadge.name) addBadge(userBadge);
+    };
+
+    const featuredIds = Array.isArray(data.featured_user_badge_ids)
+        ? data.featured_user_badge_ids : [];
+    featuredIds.forEach((id) => {
+      const userBadge = userBadges.find((item) => item && String(item.id) === String(id));
+      if (userBadge) addUserBadge(userBadge);
+      else {
+        const badge = badgeById.get(String(id));
+        if (badge) addBadge(badge);
+      }
+    });
+
+    const featured = Array.isArray(data.featured_user_badges)
+        ? data.featured_user_badges : [];
+    featured.forEach((item) => {
+      if (typeof item === 'number' || typeof item === 'string') {
+        const hit = userBadges.find((userBadge) => userBadge && String(userBadge.id) === String(item));
+        if (hit) addUserBadge(hit);
+        else {
+          const badge = badgeById.get(String(item));
+          if (badge) addBadge(badge);
+        }
+        return;
+      }
+      addUserBadge(item);
+    });
+    if (result.length) return result.slice(0, 4);
+
+    userBadges.forEach(addUserBadge);
+    if (result.length) return result.slice(0, 4);
+    badgeDefs.forEach(addBadge);
+    return result.slice(0, 4);
+  }
+
+  function createUserCard(info) {
+    const displayName = info.name || info.username;
+    const profileUrl = userProfileUrl(info.username);
+    const card = document.createElement('div');
+    card.className = 'ldp-uc';
+    card.tabIndex = -1;
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', `用户资料：${displayName}`);
+    card.innerHTML = `
+      <div class="ldp-uc-head">
+        ${info.avatar
+          ? `<img class="ldp-uc-avatar" src="${escAttr(info.avatar)}" alt="" loading="lazy" decoding="async">`
+          : '<div class="ldp-uc-avatar"></div>'}
+        <div class="ldp-uc-names">
+          <a class="ldp-uc-name" href="${escAttr(profileUrl)}" target="_blank" rel="noopener noreferrer">${esc(displayName)}</a>
+          <span class="ldp-uc-username">@${esc(info.username)}</span>
+          <div class="ldp-uc-tags">
+            ${Number.isFinite(info.trustLevel)
+              ? `<span class="ldp-uc-level">Lv.${escAttr(String(info.trustLevel))}</span>` : ''}
+            <span class="ldp-uc-title" hidden></span>
+          </div>
+        </div>
+      </div>
+      <div class="ldp-uc-bio ldp-uc-section" hidden></div>
+      <div class="ldp-uc-meta ldp-uc-section" hidden></div>
+      <div class="ldp-uc-stats" hidden></div>
+      <div class="ldp-uc-section ldp-uc-badges-wrap" hidden>
+        <div class="ldp-uc-badges"></div>
+      </div>
+      <div class="ldp-uc-loading">正在加载用户资料…</div>
+      <div class="ldp-uc-error" hidden></div>
+      <div class="ldp-uc-footer">
+        <button class="ldp-uc-follow" type="button" aria-pressed="false" hidden>关注</button>
+        <span class="ldp-uc-follow-error" role="status" hidden></span>
+        <a class="ldp-uc-profile" href="${escAttr(profileUrl)}" target="_blank" rel="noopener noreferrer">查看资料</a>
+      </div>`;
+    return card;
+  }
+
+  function updateUserCardFollow(card, data) {
+    const button = card.querySelector('.ldp-uc-follow');
+    if (!button) return;
+    const followed = data.is_followed === true;
+    button.hidden = !(followed || data.can_follow === true);
+    button.textContent = followed ? '取消关注' : '关注';
+    button.setAttribute('aria-pressed', followed ? 'true' : 'false');
+  }
+
+  function applyUserCardData(card, data, basic) {
+    const username = String(data.username || basic.username || '').trim();
+    const displayName = String(
+        data.name || data.display_name || basic.name || username || ''
+    ).trim();
+    const profileUrl = userProfileUrl(username);
+
+    const avatar = resolveUserCardAvatar(data.avatar_template, 96);
+    const avatarEl = card.querySelector('.ldp-uc-avatar');
+    if (avatar && avatarEl) {
+      if (avatarEl.tagName === 'IMG') {
+        avatarEl.src = avatar;
+      } else {
+        const img = document.createElement('img');
+        img.className = 'ldp-uc-avatar';
+        img.src = avatar;
+        img.alt = '';
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        avatarEl.replaceWith(img);
+      }
+    }
+
+    const nameEl = card.querySelector('.ldp-uc-name');
+    if (nameEl) {
+      nameEl.textContent = displayName || username;
+      if (profileUrl) nameEl.href = profileUrl;
+    }
+    const usernameEl = card.querySelector('.ldp-uc-username');
+    if (usernameEl) usernameEl.textContent = '@' + username;
+    const profileEl = card.querySelector('.ldp-uc-profile');
+    if (profileEl && profileUrl) profileEl.href = profileUrl;
+    card.setAttribute('aria-label', `用户资料：${displayName || username}`);
+    card.dataset.username = username;
+
+    const followButton = card.querySelector('.ldp-uc-follow');
+    const followError = card.querySelector('.ldp-uc-follow-error');
+    followButton.addEventListener('click', async () => {
+      const target = String(data.username || username).trim();
+      if (!target || followButton.disabled) return;
+      const wasFollowed = data.is_followed === true;
+      followButton.disabled = true;
+      followButton.setAttribute('aria-busy', 'true');
+      followError.hidden = true;
+      try {
+        await apiSend(
+            `${BASE}/follow/${encodeURIComponent(target)}.json`,
+            wasFollowed ? 'DELETE' : 'PUT'
+        );
+        data.is_followed = !wasFollowed;
+        const current = CURRENT_USER_CARD;
+        if (current && current.el && current.el.dataset.username === target) {
+          updateUserCardFollow(current.el, data);
+        }
+      } catch (err) {
+        if (!card.isConnected) return;
+        followError.textContent = `${wasFollowed ? '取消关注' : '关注'}失败：${err.message}`;
+        followError.hidden = false;
+        const current = CURRENT_USER_CARD;
+        if (current && current.el === card) positionUserCard(card, current.trigger);
+      } finally {
+        followButton.disabled = false;
+        followButton.removeAttribute('aria-busy');
+      }
+    });
+    updateUserCardFollow(card, data);
+
+    const tagsEl = card.querySelector('.ldp-uc-tags');
+    let levelEl = card.querySelector('.ldp-uc-level');
+    const trustValue = data.trust_level != null ? Number(data.trust_level) : basic.trustLevel;
+    if (Number.isFinite(trustValue)) {
+      if (!levelEl) {
+        levelEl = document.createElement('span');
+        levelEl.className = 'ldp-uc-level';
+        tagsEl.prepend(levelEl);
+      }
+      levelEl.textContent = `Lv.${trustValue}`;
+    } else if (levelEl) {
+      levelEl.remove();
+    }
+
+    const title = typeof data.title === 'string' ? data.title.trim() : '';
+    const titleEl = card.querySelector('.ldp-uc-title');
+    titleEl.textContent = title;
+    titleEl.hidden = !title;
+
+    const bioEl = card.querySelector('.ldp-uc-bio');
+    const bio = typeof data.bio_excerpt === 'string' ? data.bio_excerpt.trim() : '';
+    if (bio) {
+      bioEl.innerHTML = bio;
+      bioEl.querySelectorAll('a[href]').forEach((link) => {
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+      });
+      bioEl.hidden = false;
+    } else {
+      bioEl.textContent = '';
+      bioEl.hidden = true;
+    }
+
+    const metaEl = card.querySelector('.ldp-uc-meta');
+    metaEl.textContent = '';
+    const location = typeof data.location === 'string' ? data.location.trim() : '';
+    if (location) {
+      const item = document.createElement('span');
+      item.textContent = `所在地：${location}`;
+      metaEl.appendChild(item);
+    }
+    const website = safeWebsiteUrl(data.website);
+    if (website) {
+      const item = document.createElement('span');
+      item.textContent = '网站：';
+      const link = document.createElement('a');
+      link.href = website;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = (typeof data.website_name === 'string' && data.website_name.trim())
+          || website.replace(/^https?:\/\//i, '');
+      item.appendChild(link);
+      metaEl.appendChild(item);
+    }
+    metaEl.hidden = !metaEl.children.length;
+
+    const statsEl = card.querySelector('.ldp-uc-stats');
+    statsEl.textContent = '';
+    const stats = [
+      ['加入', fmtMonth(data.created_at)],
+      ['最近活跃', fmtTime(data.last_seen_at)],
+      ['阅读', fmtReadDuration(data.time_read)],
+    ].filter((entry) => entry[1]);
+    stats.forEach(([label, value]) => {
+      const item = document.createElement('div');
+      item.className = 'ldp-uc-stat';
+      const strong = document.createElement('b');
+      strong.textContent = value;
+      const span = document.createElement('span');
+      span.textContent = label;
+      item.appendChild(strong);
+      item.appendChild(span);
+      statsEl.appendChild(item);
+    });
+    statsEl.hidden = !stats.length;
+
+    const badges = collectUserCardBadges(data);
+    const badgesWrap = card.querySelector('.ldp-uc-badges-wrap');
+    const badgesEl = card.querySelector('.ldp-uc-badges');
+    badgesEl.textContent = '';
+    badges.forEach((badge) => {
+      const item = document.createElement('span');
+      item.className = 'ldp-uc-badge';
+      const image = resolveUserCardAsset(badge.image_url);
+      if (image) {
+        const img = document.createElement('img');
+        img.src = image;
+        img.alt = '';
+        img.loading = 'lazy';
+        item.appendChild(img);
+      }
+      const label = document.createElement('span');
+      label.textContent = badge.name || '徽章';
+      item.appendChild(label);
+      badgesEl.appendChild(item);
+    });
+    badgesWrap.hidden = !badges.length;
+
+    card.querySelector('.ldp-uc-loading').hidden = true;
+    card.querySelector('.ldp-uc-error').hidden = true;
+  }
+
+  function positionUserCard(card, trigger) {
+    if (!card || !trigger || !trigger.isConnected) return;
+    const modal = trigger.closest('.ldp-modal');
+    const bounds = modal ? modal.getBoundingClientRect() : {
+      top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight,
+    };
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const gap = 8;
+    const width = Math.max(200, Math.min(360, bounds.width - margin * 2));
+    card.style.width = `${width}px`;
+    card.style.maxHeight = `${Math.max(180, bounds.height - margin * 2)}px`;
+
+    const cardWidth = card.offsetWidth;
+    const cardHeight = card.offsetHeight;
+    let left = Math.min(
+        Math.max(rect.left, bounds.left + margin),
+        bounds.right - margin - cardWidth
+    );
+    if (left < bounds.left + margin) left = bounds.left + margin;
+
+    const below = rect.bottom + gap;
+    const above = rect.top - gap - cardHeight;
+    let top;
+    if (below + cardHeight <= bounds.bottom - margin) {
+      top = below;
+    } else if (above >= bounds.top + margin) {
+      top = above;
+    } else {
+      top = Math.max(bounds.top + margin, bounds.bottom - margin - cardHeight);
+    }
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(top)}px`;
+  }
+
+  function getUserCardInfo(trigger) {
+    const username = (trigger.dataset.username || '').trim();
+    if (!username) return null;
+    const avatarEl = trigger.matches('img') ? trigger : trigger.querySelector('img');
+    const trustText = trigger.dataset.trustLevel;
+    const trustValue = trustText != null && trustText !== '' ? Number(trustText) : NaN;
+    return {
+      username,
+      name: (trigger.dataset.name || '').trim(),
+      avatar: avatarEl ? (avatarEl.getAttribute('src') || '') : '',
+      trustLevel: Number.isFinite(trustValue) ? trustValue : null,
+    };
+  }
+
+  function closeUserCard() {
+    const current = CURRENT_USER_CARD;
+    if (!current) return;
+    CURRENT_USER_CARD = null;
+    current.cleanup();
+    current.el.remove();
+  }
+
+  function openUserCard(trigger, info) {
+    if (!info || !info.username) return;
+    if (CURRENT_USER_CARD && CURRENT_USER_CARD.trigger === trigger) {
+      closeUserCard();
+      return;
+    }
+    closeUserCard();
+
+    const overlay = trigger.closest('.ldp-overlay');
+    if (!overlay) return;
+    const card = createUserCard(info);
+    overlay.appendChild(card);
+    positionUserCard(card, trigger);
+
+    const body = trigger.closest('.ldp-body');
+    const onOutside = (event) => {
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      if (card.contains(event.target) || trigger.contains(event.target)) return;
+      closeUserCard();
+    };
+    const onEsc = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeUserCard();
+      if (trigger.isConnected) trigger.focus({ preventScroll: true });
+    };
+    const onScroll = () => closeUserCard();
+    const onResize = () => closeUserCard();
+    document.addEventListener('mousedown', onOutside, true);
+    document.addEventListener('keydown', onEsc, true);
+    if (body) body.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+
+    const cleanup = () => {
+      document.removeEventListener('mousedown', onOutside, true);
+      document.removeEventListener('keydown', onEsc, true);
+      if (body) body.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onResize);
+    };
+    CURRENT_USER_CARD = { el: card, trigger, cleanup };
+    card.focus({ preventScroll: true });
+
+    loadUserCard(info.username).then((data) => {
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      applyUserCardData(card, data, info);
+      positionUserCard(card, trigger);
+    }).catch(() => {
+      if (!CURRENT_USER_CARD || CURRENT_USER_CARD.el !== card) return;
+      const loading = card.querySelector('.ldp-uc-loading');
+      if (loading) loading.hidden = true;
+      const error = card.querySelector('.ldp-uc-error');
+      if (error) {
+        error.textContent = '暂时无法加载更多资料';
+        error.hidden = false;
+      }
+      positionUserCard(card, trigger);
+    });
   }
 
   /* ============ 3. 单图灯箱 ============ */
@@ -1450,6 +2006,11 @@
     const time = fmtTime(p.created_at);
     const profileUrl = userProfileUrl(p.username);
     const profileLabel = userProfileLabel(username, displayName);
+    const userCardAttrs = username
+        ? ` data-username="${escAttr(username)}" data-name="${escAttr(displayName)}"`
+          + (p.trust_level != null
+            ? ` data-trust-level="${escAttr(String(p.trust_level))}"` : '')
+        : '';
 
     let cooked = isDeleted
         ? '<p class="ldp-deleted">（帖子已被作者删除）</p>'
@@ -1496,7 +2057,7 @@
     node.dataset.postNumber = p.post_number;
     node.innerHTML = `
       <div class="ldp-post-head">
-        ${profileUrl ? `<a class="ldp-user-link" href="${profileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(profileLabel)}">` : ''}
+        ${profileUrl ? `<a class="ldp-user-link" href="${profileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(profileLabel)}"${userCardAttrs}>` : ''}
         ${avatar ? `<img class="ldp-avatar" src="${avatar}" alt="" loading="lazy" decoding="async">` : ''}
         ${displayName ? `<span class="ldp-author">${esc(displayName)}</span>` : ''}
         ${username ? `<span class="ldp-user">@${esc(username)}</span>` : ''}
@@ -2069,6 +2630,19 @@
         return;
       }
 
+      const userCardTrigger = e.target.closest(
+          '.ldp-user-link, .ldp-boost-avatar-link, .ldp-b-avatar'
+      );
+      if (userCardTrigger && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+        const info = getUserCardInfo(userCardTrigger);
+        if (info) {
+          e.preventDefault();
+          e.stopPropagation();
+          openUserCard(userCardTrigger, info);
+          return;
+        }
+      }
+
       const anchor = e.target.closest('a');
       if (anchor && anchor.target === '_blank') return;
 
@@ -2184,13 +2758,20 @@
                   ? BASE + res.user.avatar_template.replace('{size}', '36') : '';
               const bProfileUrl = userProfileUrl(res.user && res.user.username);
               const bProfileLabel = userProfileLabel(res.user && res.user.username, res.user && (res.user.name || res.user.display_name));
+              const bUsername = (res.user && res.user.username) || '';
+              const bCardName = String(
+                  (res.user && (res.user.name || res.user.display_name)) || bUsername || ''
+              );
+              const bCardAttrs = bUsername
+                  ? ` data-username="${escAttr(bUsername)}" data-name="${escAttr(bCardName)}"`
+                  : '';
               const newBubble = document.createElement('div');
               newBubble.className = 'ldp-boost-bubble ldp-flash';
               newBubble.dataset.boostId = res.id;
               newBubble.innerHTML =
                   (bAvatar ? (bProfileUrl
-                    ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"><img class="ldp-b-avatar" src="${bAvatar}" alt=""></a>`
-                    : `<img class="ldp-b-avatar" src="${bAvatar}" alt="">`) : '') +
+                    ? `<a class="ldp-boost-avatar-link" href="${bProfileUrl}" target="_blank" rel="noopener noreferrer" title="${escAttr(bProfileLabel)}"${bCardAttrs}><img class="ldp-b-avatar" src="${bAvatar}" alt=""${bCardAttrs}></a>`
+                    : `<img class="ldp-b-avatar" src="${bAvatar}" alt=""${bCardAttrs}>`) : '') +
                   `<p>${res.cooked || ''}</p>` +
                   `<button class="ldp-boost-del" title="删除此Boost">×</button>`;
               listEl.appendChild(newBubble);
@@ -2836,6 +3417,7 @@
       tracker.stop();
       ctx.repliesIO?.disconnect();
       floorNavigator.destroy();
+      closeUserCard();
       overlay.remove();
       if (CURRENT_OVERLAY === overlay) CURRENT_OVERLAY = null;
       document.removeEventListener('keydown', onEsc);
